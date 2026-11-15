@@ -200,6 +200,13 @@ export const messages: Record<TranslationKey, string> = {
   'accounts.draining': '無効化中 · 後処理中',
   'accounts.syncing': '有効化中 · モデルを同期',
   'accounts.refreshFailed': '更新失敗',
+  'accounts.test': 'チャットテスト',
+  'accounts.testing': 'テスト中…',
+  'accounts.testFailed': 'テスト失敗',
+  'accounts.testPassed': '{name} テスト成功 ({model}, {latency}ms): {reply}',
+  'accounts.testPassedUnfrozen': '{name} テスト成功・凍結解除 ({model}, {latency}ms): {reply}',
+  'accounts.testFailedNotice': '{name} テスト失敗: {error}',
+  'accounts.freezeUntil': '{time} まで凍結',
   'accounts.saved': 'アカウントを保存しました',
   'accounts.remoteAdd': 'リモートで追加',
   'accounts.remoteHttps':
@@ -449,8 +456,18 @@ export const messages: Record<TranslationKey, string> = {
   'settings.accountOrderUp': '{account} を上へ移動',
   'settings.accountOrderDown': '{account} を下へ移動',
   'settings.routingFillFirst': '同じアカウントを優先',
+  'settings.routingSmart': 'スマート (Smart)',
   'settings.routingHelp':
-    'ラウンドロビンは順番にアカウントを使い、同じアカウントを優先すると上限到達か利用不可まで同じアカウントを使います',
+    'ラウンドロビンは順番に、同じアカウント優先は満枠まで維持、スマートは待機ワーカー優先・60秒RPM制限・セッションキャッシュ親和性・プラン・日次使用量で最適化します',
+  'settings.smartSoftRPM': 'スマートルーティング ソフト RPM',
+  'settings.smartSoftRPMHelp':
+    '60秒間のリクエスト数がこの値に達したアカウントの優先度を下げます（0で無制限）',
+  'settings.smartHardRPM': 'スマートルーティング ハード RPM',
+  'settings.smartHardRPMHelp':
+    '60秒間のリクエスト数がこの上限に達したアカウントを極力回避します（0で無制限）',
+  'settings.quotaAutoFreeze': 'クォータ厳格凍結・自動復旧',
+  'settings.quotaAutoFreezeHelp':
+    'Daily limit / Plan limit 到達時にリセット時刻まで厳格に凍結し（手動チャットテストでのみバイパス・解除可）、リセット時に自動復旧します',
   'settings.waaBackend': 'WAA バックエンド',
   'settings.waaBackendCamoufox': 'Camoufox',
   'settings.waaBackendSpiderMonkey': 'SpiderMonkey',
@@ -1923,6 +1940,7 @@ export const messages: Record<TranslationKey, string> = {
   'usage.range.90d': '過去 90 日間',
   'usage.range.today': '今日',
   'usage.range.yesterday': '昨日',
+  'usage.range.quotaCycle': 'クォータ周期 (PT 00:00)',
   'usage.range.week': '今週',
   'usage.range.month': '今月',
   'usage.range.lastMonth': '先月',

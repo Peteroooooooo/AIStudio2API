@@ -41,6 +41,9 @@ type generationAdmin interface {
 	DeleteAccount(context.Context, string) error
 	LoginAccount(context.Context, string, *camoufoxnative.LiveView) (api.AdminAccount, error)
 	RefreshAccount(context.Context, string) (api.AdminAccountRefresh, error)
+	TestAccount(context.Context, string, string) (api.AdminAccountTest, error)
+	SeedSmartUsage(map[string]struct{ Requests, Tokens int64 }, time.Time)
+	PruneExpiredCooldowns(context.Context, time.Time) bool
 	StartService(context.Context) (api.AdminStatus, error)
 	StopService(context.Context) (api.AdminStatus, error)
 	RuntimeConfig(context.Context) (api.RuntimeConfig, error)
@@ -238,6 +241,7 @@ func (manager *runtimeManager) startService(ctx context.Context) (api.AdminStatu
 	status, startErr := next.admin.StartService(launchCtx)
 	manager.finishStart(launchCancel)
 	if next != current {
+		_ = manager.seedSmartUsage(ctx)
 		if err := current.Close(); err != nil {
 			manager.requests.log("service", "WARN", "旧生成服务关闭失败", "error", err)
 		}
@@ -613,6 +617,13 @@ func (manager *runtimeManager) RefreshAccount(ctx context.Context, id string) (a
 	return manager.current.admin.RefreshAccount(ctx, id)
 }
 
+// TestAccount 在当前生成服务对指定账户发起真实对话测试
+func (manager *runtimeManager) TestAccount(ctx context.Context, id string, modelID string) (api.AdminAccountTest, error) {
+	manager.mu.RLock()
+	defer manager.mu.RUnlock()
+	return manager.current.admin.TestAccount(ctx, id, modelID)
+}
+
 // ClearLogs 清空进程级管理日志
 func (manager *runtimeManager) ClearLogs(context.Context) error {
 	manager.requests.clearLogs()
@@ -697,6 +708,50 @@ func (manager *runtimeManager) RecordAccessLog(entry api.AccessLog) {
 	}
 }
 
+// seedSmartUsage 从请求账本回填当前 Google 额度日（America/Los_Angeles 00:00 起）各账户请求与 Token 消耗
+func (manager *runtimeManager) seedSmartUsage(ctx context.Context) error {
+	if manager.ledger == nil {
+		return nil
+	}
+	now := time.Now()
+	since := aistudio.LastQuotaDayStart(now)
+	stats, err := manager.ledger.AccountUsageSince(ctx, since)
+	if err != nil {
+		return err
+	}
+	mapped := make(map[string]struct{ Requests, Tokens int64 }, len(stats))
+	for account, row := range stats {
+		mapped[account] = struct{ Requests, Tokens int64 }{
+			Requests: row.Requests,
+			Tokens:   row.Tokens,
+		}
+	}
+	manager.mu.RLock()
+	admin := manager.current.admin
+	manager.mu.RUnlock()
+	admin.SeedSmartUsage(mapped, now)
+	return nil
+}
+
+// watchQuotaRecovery 每 30 秒巡检到期的限额/冷却记录并在解冻时刷新推送管理端状态
+func (manager *runtimeManager) watchQuotaRecovery(ctx context.Context) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			manager.mu.RLock()
+			admin := manager.current.admin
+			manager.mu.RUnlock()
+			if admin.PruneExpiredCooldowns(ctx, now) {
+				manager.requests.log("service", "INFO", "额度/冷却到期自动恢复")
+			}
+		}
+	}
+}
+
 // decorateRuntimeConfig 标记配置所属的进程级与生成服务生效时机
 func (manager *runtimeManager) decorateRuntimeConfig(value api.RuntimeConfig, active config.Config) api.RuntimeConfig {
 	value.ActiveListenAddr = manager.activeManagement.ListenAddr
@@ -742,7 +797,6 @@ func sameDataConfig(value api.RuntimeConfig, active config.Config, overrides dat
 	return saved.AuthStates == active.AuthStates && saved.Proxy == active.Proxy &&
 		saved.InitTimeout == active.InitTimeout && saved.RequestTimeout == active.RequestTimeout &&
 		slices.Equal(saved.UpstreamChannels, active.UpstreamChannels) && saved.ModelMapping == active.ModelMapping &&
-		saved.MaxAccountSwitches == active.MaxAccountSwitches &&
 		saved.WAABackend == active.WAABackend &&
 		saved.BuildNativeNonstream == active.BuildNativeNonstream &&
 		saved.NonstreamKeepalive == active.NonstreamKeepalive && saved.FakeStream == active.FakeStream &&

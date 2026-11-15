@@ -71,4 +71,24 @@ func TestAdminConfig(t *testing.T) {
 	if _, err := admin.UpdateRuntimeConfig(ctx, value); err != nil {
 		t.Fatal(err)
 	}
+	baselineCfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value.RoutingStrategy = "smart"
+	value.SmartSoftRPM = 7
+	value.SmartHardRPM = 9
+	value.QuotaAutoFreeze = true
+	value.MaxAccountSwitches = 8
+	updated, err := admin.UpdateRuntimeConfig(ctx, value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoratedSmart := manager.decorateRuntimeConfig(updated, baselineCfg)
+	if decoratedSmart.ServiceRestartRequired {
+		t.Fatalf("expected smart/max_account_switches update to be live without service restart: %+v", decoratedSmart)
+	}
+	if !pool.IsSmartRouting() || !pool.QuotaAutoFreeze() {
+		t.Fatalf("expected pool smart routing and quota auto freeze enabled")
+	}
 }

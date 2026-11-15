@@ -96,10 +96,14 @@ const addPending = computed(
   () => pendingAction.value === 'pairing' || pendingAction.value === 'chrome-discover',
 )
 const refreshing = reactive(new Set<string>())
+// testing 是正在执行手动真实对话探活的账户
+const testing = reactive(new Set<string>())
 // queued 是刷新全部中尚未轮到的账户
 const queued = reactive(new Set<string>())
 // refreshErrors 是最近一次刷新失败的账户与失败原因
 const refreshErrors = reactive(new Map<string, string>())
+// testErrors 是最近一次手动对话测试失败的账户与失败原因
+const testErrors = reactive(new Map<string, string>())
 // refreshTotal 与 refreshDone 是进行中的刷新全部的账户数与已完成数，没有刷新全部时 refreshTotal 为 0
 const refreshTotal = ref(0)
 const refreshDone = ref(0)
@@ -195,7 +199,11 @@ const reasonClass =
 // transitionKeys 是账户启停后台收尾阶段的文字，宽屏下各行按最长的一项留出位置，阶段出现时状态列宽度不变
 const transitionKeys: TranslationKey[] = ['accounts.draining', 'accounts.syncing']
 // reasonKeys 是状态旁说明按钮的文字，宽屏下各行按最长的一项留出位置，按钮出现时状态列宽度不变
-const reasonKeys: TranslationKey[] = ['accounts.reason', 'accounts.refreshFailed']
+const reasonKeys: TranslationKey[] = [
+  'accounts.reason',
+  'accounts.refreshFailed',
+  'accounts.testFailed',
+]
 
 // transitionText 返回账户启停收尾阶段的文字：停用时等待在途请求与 Worker 启动等占用结束，没有收尾时返回空串
 function transitionText(account: Account): string {
@@ -962,6 +970,57 @@ async function refreshAccount(account: Account): Promise<void> {
   }
 }
 
+// testAccount 对指定账户发起一次最小真实对话探活（绕过当前冷却/限额冻结），成功时自动解冻
+async function testAccount(account: Account): Promise<void> {
+  if (testing.has(account.id)) return
+  testing.add(account.id)
+  testErrors.delete(account.id)
+  try {
+    const result = await api.testAccount(account.id)
+    emit('updated', result.account)
+    emit('refresh')
+    if (result.ok) {
+      const reply = (result.reply ?? '').replace(/\s+/g, ' ').trim().slice(0, 40)
+      const message = t(
+        (result.cleared_cooldowns ?? 0) > 0 ? 'accounts.testPassedUnfrozen' : 'accounts.testPassed',
+      )
+        .replace('{name}', result.account.label)
+        .replace('{model}', result.model)
+        .replace('{latency}', String(result.latency_ms))
+        .replace('{reply}', reply || 'OK')
+      emit('notice', message, 'success')
+    } else {
+      const detail = result.error || t('accounts.testFailed')
+      testErrors.set(account.id, detail)
+      emit(
+        'notice',
+        t('accounts.testFailedNotice')
+          .replace('{name}', result.account.label)
+          .replace('{error}', detail),
+        'error',
+      )
+    }
+  } catch (error) {
+    const msg = errorText(error)
+    testErrors.set(account.id, msg)
+    emit('notice', msg, 'error')
+  } finally {
+    testing.delete(account.id)
+  }
+}
+
+// quotaFreezeText 返回账户限额冻结的可读提示（类型 + 恢复时间）
+function quotaFreezeText(account: Account): string {
+  const freeze = account.quota_freeze
+  if (!freeze) return ''
+  const until = new Date(freeze.until).toLocaleTimeString(locale.value, {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  })
+  return `${freeze.kind} · ${t('accounts.freezeUntil').replace('{time}', until)}`
+}
+
 // refreshConcurrency 是刷新全部时同时刷新的账户数
 const refreshConcurrency = 4
 
@@ -1380,6 +1439,12 @@ async function refreshAccounts(accounts: Account[]): Promise<void> {
                   class="block truncate text-xs text-gray-500"
                   >{{ accountSummary(account) }}</span
                 >
+                <span
+                  v-if="account.quota_freeze"
+                  v-tooltip.overflow="quotaFreezeText(account)"
+                  class="mt-0.5 block truncate text-xs text-amber-400/90"
+                  >{{ quotaFreezeText(account) }}</span
+                >
                 <template v-if="downloadingRelogins.has(account.id)">
                   <span class="mt-1 flex flex-wrap gap-x-2 text-xs text-gray-400"
                     >{{ t('accounts.downloadingBrowser') }}
@@ -1459,6 +1524,21 @@ async function refreshAccounts(accounts: Account[]): Promise<void> {
                   {{ t('accounts.reason') }}
                 </button>
                 <button
+                  v-else-if="testErrors.has(account.id)"
+                  type="button"
+                  class="[grid-area:1/1]"
+                  :class="reasonClass"
+                  @click="
+                    reason = {
+                      title: account.label,
+                      kind: t('accounts.testFailed'),
+                      text: testErrors.get(account.id) ?? '',
+                    }
+                  "
+                >
+                  {{ t('accounts.testFailed') }}
+                </button>
+                <button
                   v-else-if="refreshErrors.has(account.id)"
                   type="button"
                   class="[grid-area:1/1]"
@@ -1494,6 +1574,25 @@ async function refreshAccounts(accounts: Account[]): Promise<void> {
                 @click="loginAccount(account)"
               >
                 {{ t('common.relogin') }}
+              </button>
+              <button
+                v-tooltip="t(testing.has(account.id) ? 'accounts.testing' : 'accounts.test')"
+                type="button"
+                :class="[accountIconClass, 'hover:text-blue-400']"
+                :disabled="
+                  testing.has(account.id) ||
+                  refreshing.has(account.id) ||
+                  queued.has(account.id) ||
+                  pendingAction === `login:${account.id}` ||
+                  reloggingAccounts.has(account.id) ||
+                  !account.enabled ||
+                  account.transition !== undefined
+                "
+                :aria-label="t(testing.has(account.id) ? 'accounts.testing' : 'accounts.test')"
+                :aria-busy="testing.has(account.id)"
+                @click="testAccount(account)"
+              >
+                <UiIcon :name="testing.has(account.id) ? 'spinner' : 'throughput'" :size="15" />
               </button>
               <button
                 v-tooltip="t(queued.has(account.id) ? 'accounts.queued' : 'accounts.refresh')"

@@ -201,6 +201,13 @@ export const messages: Record<TranslationKey, string> = {
   'accounts.draining': 'Désactivation · finalisation',
   'accounts.syncing': 'Activation · synchronisation des modèles',
   'accounts.refreshFailed': 'Échec',
+  'accounts.test': 'Test de discussion',
+  'accounts.testing': 'Test en cours…',
+  'accounts.testFailed': 'Échec du test',
+  'accounts.testPassed': '{name} test réussi ({model}, {latency}ms) : {reply}',
+  'accounts.testPassedUnfrozen': '{name} test réussi et dégelé ({model}, {latency}ms) : {reply}',
+  'accounts.testFailedNotice': 'Échec du test pour {name} : {error}',
+  'accounts.freezeUntil': 'Gelé jusqu’à {time}',
   'accounts.saved': 'Compte enregistré',
   'accounts.remoteAdd': 'Ajouter à distance',
   'accounts.remoteHttps':
@@ -451,8 +458,18 @@ export const messages: Record<TranslationKey, string> = {
   'settings.accountOrderUp': 'Monter {account}',
   'settings.accountOrderDown': 'Descendre {account}',
   'settings.routingFillFirst': 'Même compte en priorité',
+  'settings.routingSmart': 'Intelligent (Smart)',
   'settings.routingHelp':
-    'Le tourniquet alterne les comptes. « Même compte en priorité » garde un compte jusqu’à ce qu’il soit saturé ou indisponible.',
+    'Le tourniquet alterne, « Même compte en priorité » garde un compte jusqu’à saturation, et « Intelligent » équilibre selon les workers libres, les limites RPM 60s, l’affinité de session, le niveau et l’usage quotidien.',
+  'settings.smartSoftRPM': 'RPM souple (routage intelligent)',
+  'settings.smartSoftRPMHelp':
+    'Réduit la priorité d’un compte lorsque ses requêtes sur 60 s atteignent ce seuil (0 pour désactiver)',
+  'settings.smartHardRPM': 'RPM strict (routage intelligent)',
+  'settings.smartHardRPMHelp':
+    'Évite un compte lorsque ses requêtes sur 60 s atteignent cette limite sauf si tous sont saturés (0 pour désactiver)',
+  'settings.quotaAutoFreeze': 'Gel strict des quotas et reprise auto',
+  'settings.quotaAutoFreezeHelp':
+    'Gèle strictement les comptes atteignant Daily limit ou Plan limit jusqu’à la réinitialisation (contournable uniquement via le test manuel) avec reprise automatique',
   'settings.waaBackend': 'Moteur WAA',
   'settings.waaBackendCamoufox': 'Camoufox',
   'settings.waaBackendSpiderMonkey': 'SpiderMonkey',
@@ -1974,6 +1991,7 @@ export const messages: Record<TranslationKey, string> = {
   'usage.range.90d': '90 derniers jours',
   'usage.range.today': 'Aujourd’hui',
   'usage.range.yesterday': 'Hier',
+  'usage.range.quotaCycle': 'Cycle quota (PT 00:00)',
   'usage.range.week': 'Cette semaine',
   'usage.range.month': 'Ce mois-ci',
   'usage.range.lastMonth': 'Le mois dernier',

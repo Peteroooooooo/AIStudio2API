@@ -34,6 +34,8 @@ type PooledService struct {
 	ContinuationRewrite bool
 	// ContinuationPrompt 是改写末尾 assistant 轮时写入系统指令的续写提示词，为空时末尾 assistant 正文作为最后一轮 user
 	ContinuationPrompt string
+	// MaxAccountSwitches 是非额度失败时单个请求允许换号的次数上限，小于 0 表示不限制（兼容旧测试）
+	MaxAccountSwitches int
 	// omniVideos 记录本进程中尚无结果文件的 Omni 视频任务：值为 nil 时仍在生成，为 error 时生成失败
 	omniVideos sync.Map
 	// inlineMediaMu 保护 inlineMediaUses
@@ -87,7 +89,7 @@ func NewPooledService(pool *AccountPool, client *Client) *PooledService {
 	for accountID, catalog := range pool.takeCachedCatalogs() {
 		client.setModelCatalog(accountID, catalog)
 	}
-	return &PooledService{pool: pool, client: client}
+	return &PooledService{pool: pool, client: client, MaxAccountSwitches: -1}
 }
 
 // NewPoolRequestContextProvider 创建账户协议上下文提供者
@@ -755,6 +757,10 @@ func (s *PooledService) Generate(ctx context.Context, request GenerateRequest) (
 		AccountID:  strings.TrimSpace(request.AccountID),
 		ResourceID: resourceID,
 	}
+	if selection.AccountID == "" && selection.ResourceID == "" {
+		apiKey, _ := ctx.Value(apiKeyContextKey{}).(string)
+		selection.SessionKey = ComputeSessionKey(apiKey, modelID, request.System, request.Contents)
+	}
 	if RequestNeedsBuild(request) || request.Unary && s.BuildNativeNonstream {
 		selection.PreferredChannel = ChannelBuild
 	}
@@ -763,6 +769,7 @@ func (s *PooledService) Generate(ctx context.Context, request GenerateRequest) (
 		pinned = true
 	}
 	var requestErr error
+	nonQuotaFailures := 0
 	for attempt := 0; attempt < accountAttemptLimit(s.pool, pinned); attempt++ {
 		lease, owned, err := resolveAccountLease(ctx, s.pool, selection)
 		if err != nil {
@@ -784,6 +791,8 @@ func (s *PooledService) Generate(ctx context.Context, request GenerateRequest) (
 		}
 		requestErr = err
 		retryable := retryableAccountError(err)
+		_, isQuota := QuotaCooldownForError(err, time.Now())
+		isCooling := errors.Is(err, ErrAccountCoolingDown)
 		var stateErr error
 		if owned && retryable {
 			stateErr = s.markRetryableFailure(ctx, lease, lease.CooldownScope(modelID), err)
@@ -794,8 +803,122 @@ func (s *PooledService) Generate(ctx context.Context, request GenerateRequest) (
 		if !retryable || !owned || stateErr != nil {
 			return nil, requestErr
 		}
+		if !isQuota && !isCooling && s.MaxAccountSwitches >= 0 {
+			nonQuotaFailures++
+			if nonQuotaFailures > s.MaxAccountSwitches {
+				return nil, requestErr
+			}
+		}
 	}
 	return nil, requestErr
+}
+
+// AccountChatTestResult 表示管理端手动探活单个账户对话的结果
+type AccountChatTestResult struct {
+	OK               bool
+	Model            string
+	Reply            string
+	ClearedCooldowns []string
+	LatencyMS        int64
+	StatusCode       int
+	Err              error
+}
+
+// TestAccountChat 在忽略当前冷却与限额冻结的前提下，使用指定（或自动选定的）对话模型发送一次最小请求探活；成功时自动解除冷却与冻结
+func (s *PooledService) TestAccountChat(ctx context.Context, accountID string, modelID string) (AccountChatTestResult, error) {
+	started := time.Now()
+	accountID = strings.TrimSpace(accountID)
+	modelID = strings.TrimPrefix(strings.TrimSpace(modelID), "models/")
+	if modelID == "" {
+		picked, err := s.pool.AccountTestModel(accountID)
+		if err != nil {
+			return AccountChatTestResult{}, err
+		}
+		modelID = picked
+	}
+	lease, err := s.pool.AcquireFor(ctx, AccountSelection{
+		AccountID:      accountID,
+		ModelID:        modelID,
+		Method:         "generateContent",
+		PlaygroundOnly: true,
+		BypassCooldown: true,
+		anyState:       true,
+	})
+	if err != nil {
+		return AccountChatTestResult{
+			OK:        false,
+			Model:     modelID,
+			LatencyMS: time.Since(started).Milliseconds(),
+			Err:       err,
+		}, nil
+	}
+	modelID = canonicalAccountModelID(lease.Account(), modelID)
+	leaseCtx := ContextWithAccountLease(ctx, lease)
+	maxTokens := int64(32)
+	events, genErr := s.Generate(leaseCtx, GenerateRequest{
+		Model:     modelID,
+		AccountID: accountID,
+		Contents:  []Content{{Role: RoleUser, Parts: []Part{{Text: "Reply with OK."}}}},
+		Config:    GenerationConfig{MaxOutputTokens: &maxTokens},
+	})
+	var replyBuilder strings.Builder
+	if genErr == nil {
+		for event := range events {
+			switch event.Kind {
+			case EventText:
+				replyBuilder.WriteString(event.Text)
+			case EventError:
+				genErr = event.Err
+			}
+		}
+		if genErr == nil && ctx.Err() != nil {
+			genErr = ctx.Err()
+		}
+	}
+	if genErr == nil {
+		_ = lease.MarkAuthenticationValid()
+	} else if DefinitiveAuthenticationFailure(genErr) {
+		_ = lease.ConfirmAuthenticationFailure(ctx, genErr)
+	} else if denial := RestrictionDenial(genErr); denial != nil {
+		_ = s.pool.MarkRestricted(accountID, denial)
+	} else if cd, ok := QuotaCooldownForError(genErr, time.Now()); ok {
+		scope := lease.CooldownScope(modelID)
+		if cd.Global {
+			scope = ""
+		}
+		_, _, _ = s.pool.MarkQuotaCooldownIfGeneration(accountID, scope, lease.ModelAccessGeneration(), lease.CheckedAt(), cd)
+	} else if rej, ok := AccountRejectionCooldown(genErr); ok {
+		_, _, _ = s.pool.MarkQuotaCooldownIfGeneration(accountID, lease.CooldownScope(modelID), lease.ModelAccessGeneration(), lease.CheckedAt(), rej)
+		s.pool.RecordSmartRejection(accountID)
+	}
+	if releaseErr := lease.Release(); releaseErr != nil && genErr == nil {
+		genErr = releaseErr
+	}
+	latency := time.Since(started).Milliseconds()
+	if genErr != nil {
+		statusCode := 0
+		var rpcErr *RPCError
+		if errors.As(genErr, &rpcErr) {
+			statusCode = rpcErr.StatusCode
+		}
+		return AccountChatTestResult{
+			OK:         false,
+			Model:      modelID,
+			LatencyMS:  latency,
+			StatusCode: statusCode,
+			Err:        genErr,
+		}, nil
+	}
+	cleared, _ := s.pool.ClearAccountTestCooldowns(accountID, modelID)
+	s.pool.RecordSmartSuccess(accountID, 0)
+	return AccountChatTestResult{
+		OK:               true,
+		Model:            modelID,
+		Reply:            strings.TrimSpace(replyBuilder.String()),
+		ClearedCooldowns: cleared,
+		LatencyMS:        latency,
+		StatusCode:       http.StatusOK,
+	}, nil
 }
 
 func accountAttemptLimit(pool *AccountPool, pinned bool) int {

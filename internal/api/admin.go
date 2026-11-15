@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"time"
 
@@ -28,6 +29,7 @@ type AdminService interface {
 	DeleteAccount(context.Context, string) error
 	LoginAccount(context.Context, string, *camoufoxnative.LiveView) (AdminAccount, error)
 	RefreshAccount(context.Context, string) (AdminAccountRefresh, error)
+	TestAccount(ctx context.Context, accountID string, modelID string) (AdminAccountTest, error)
 	StartService(context.Context) (AdminStatus, error)
 	StopService(context.Context) (AdminStatus, error)
 	DownloadCamoufox(context.Context) (AdminStatus, error)
@@ -182,9 +184,10 @@ type AdminAccount struct {
 	Egress      string   `json:"egress"`
 	Locale      string   `json:"locale"`
 	Timezone    string   `json:"timezone"`
-	Models      []string `json:"models"`
-	BenefitTier string   `json:"benefit_tier"`
-	Message     string   `json:"message"`
+	Models      []string              `json:"models"`
+	BenefitTier string                `json:"benefit_tier"`
+	Message     string                `json:"message"`
+	QuotaFreeze *aistudio.QuotaFreeze `json:"quota_freeze,omitempty"`
 
 	// PairingRenewedAt 是远程配对账户最近一次由原电脑续签的时间，没有经配对续签时省略
 	PairingRenewedAt *time.Time `json:"pairing_renewed_at,omitempty"`
@@ -221,6 +224,23 @@ type AdminAccountRefresh struct {
 	Tier           string       `json:"tier"`
 	PreviousModels int          `json:"previous_models"`
 	Models         int          `json:"models"`
+}
+
+// AccountTestInput 表示手动测试账户对话的可选请求体
+type AccountTestInput struct {
+	Model string `json:"model"`
+}
+
+// AdminAccountTest 表示手动测试单个账户对话的结果
+type AdminAccountTest struct {
+	OK               bool         `json:"ok"`
+	Account          AdminAccount `json:"account"`
+	Model            string       `json:"model"`
+	Reply            string       `json:"reply,omitempty"`
+	ClearedCooldowns []string     `json:"cleared_cooldowns,omitempty"`
+	LatencyMS        int64        `json:"latency_ms"`
+	StatusCode       int          `json:"status_code,omitempty"`
+	Error            string       `json:"error,omitempty"`
 }
 
 // AccountInput 表示已有账户配置
@@ -323,6 +343,9 @@ type RuntimeConfig struct {
 	WarmStartupConcurrency    int                  `json:"warm_startup_concurrency"`
 	PerAccountConcurrency     int                  `json:"per_account_concurrency"`
 	RoutingStrategy           string               `json:"routing_strategy"`
+	SmartSoftRPM              int                  `json:"smart_soft_rpm"`
+	SmartHardRPM              int                  `json:"smart_hard_rpm"`
+	QuotaAutoFreeze           bool                 `json:"quota_auto_freeze"`
 	AccountOrder              string               `json:"account_order"`
 	MaxAccountSwitches        int                  `json:"max_account_switches"`
 	UpstreamChannels          []string             `json:"upstream_channels"`
@@ -384,6 +407,7 @@ func (s *server) registerAdmin(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/accounts/{id}/login", s.handleLoginAccount)
 	mux.HandleFunc("GET /api/login-view/{view}", s.handleLoginView)
 	mux.HandleFunc("POST /api/accounts/{id}/refresh", s.handleRefreshAccount)
+	mux.HandleFunc("POST /api/accounts/{id}/test", s.handleTestAccount)
 	mux.HandleFunc("POST /api/control/start", s.handleStartService)
 	mux.HandleFunc("POST /api/control/stop", s.handleStopService)
 	mux.HandleFunc("POST /api/camoufox/download", s.handleDownloadCamoufox)
@@ -500,6 +524,20 @@ func (s *server) handleRefreshAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, refresh)
+}
+
+func (s *server) handleTestAccount(w http.ResponseWriter, r *http.Request) {
+	var input AccountTestInput
+	if err := decodeJSON(r, &input); err != nil && !errors.Is(err, io.EOF) {
+		writeAdminError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	result, err := s.config.Admin.TestAccount(r.Context(), r.PathValue("id"), input.Model)
+	if err != nil {
+		writeAdminUpstreamError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (s *server) handleStartService(w http.ResponseWriter, r *http.Request) {

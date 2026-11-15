@@ -42,6 +42,9 @@ var configKeys = [...]string{
 	"WARM_STARTUP_CONCURRENCY",
 	"PER_ACCOUNT_CONCURRENCY",
 	"ROUTING_STRATEGY",
+	"SMART_SOFT_RPM",
+	"SMART_HARD_RPM",
+	"QUOTA_AUTO_FREEZE",
 	"ACCOUNT_ORDER",
 	"MAX_ACCOUNT_SWITCHES",
 	"UPSTREAM_CHANNELS",
@@ -97,6 +100,15 @@ const FirstEventHedgeAuto = "auto"
 // DefaultMaxAccountSwitches 是 MAX_ACCOUNT_SWITCHES 的默认值
 const DefaultMaxAccountSwitches = 3
 
+// DefaultSmartSoftRPM 是智能路由单账户 60 秒软保护请求数上限的默认值
+const DefaultSmartSoftRPM = 8
+
+// DefaultSmartHardRPM 是智能路由单账户 60 秒硬保护请求数上限的默认值
+const DefaultSmartHardRPM = 9
+
+// DefaultQuotaAutoFreeze 是触发每日或套餐限额时是否严格冻结到恢复时间
+const DefaultQuotaAutoFreeze = true
+
 // DefaultFirstEventHedgeModels 是 FIRST_EVENT_HEDGE_MODELS 的默认值
 const DefaultFirstEventHedgeModels = "gemini-4-argon"
 
@@ -144,6 +156,9 @@ type Config struct {
 	WarmStartupConcurrency int
 	PerAccountConcurrency  int
 	RoutingStrategy        string
+	SmartSoftRPM           int
+	SmartHardRPM           int
+	QuotaAutoFreeze        bool
 	AccountOrder           string
 	MaxAccountSwitches     int
 	UpstreamChannels       []string
@@ -194,6 +209,9 @@ func Default() Config {
 		WarmStartupConcurrency: defaultWarmConcurrency,
 		PerAccountConcurrency:  defaultAccountConcurrency,
 		RoutingStrategy:        "round-robin",
+		SmartSoftRPM:           DefaultSmartSoftRPM,
+		SmartHardRPM:           DefaultSmartHardRPM,
+		QuotaAutoFreeze:        DefaultQuotaAutoFreeze,
 		MaxAccountSwitches:     DefaultMaxAccountSwitches,
 		UpstreamChannels:       []string{"playground"},
 		WAABackend:             WAABackendSpiderMonkey,
@@ -254,6 +272,9 @@ var configSetters = map[string]func(*Config, string) error{
 	"PROXY_API_KEY":            textSetter(func(c *Config) *string { return &c.ProxyAPIKey }, strings.TrimSpace),
 	"PROXY":                    textSetter(func(c *Config) *string { return &c.Proxy }, strings.TrimSpace),
 	"ROUTING_STRATEGY":         textSetter(func(c *Config) *string { return &c.RoutingStrategy }, strings.TrimSpace),
+	"SMART_SOFT_RPM":           nonNegativeIntSetter("SMART_SOFT_RPM", func(c *Config) *int { return &c.SmartSoftRPM }),
+	"SMART_HARD_RPM":           nonNegativeIntSetter("SMART_HARD_RPM", func(c *Config) *int { return &c.SmartHardRPM }),
+	"QUOTA_AUTO_FREEZE":        boolSetter("QUOTA_AUTO_FREEZE", func(c *Config) *bool { return &c.QuotaAutoFreeze }),
 	"ACCOUNT_ORDER":            textSetter(func(c *Config) *string { return &c.AccountOrder }, strings.TrimSpace),
 	"MODEL_MAPPING":            textSetter(func(c *Config) *string { return &c.ModelMapping }, strings.TrimSpace),
 	"MODEL_CHANNELS":           textSetter(func(c *Config) *string { return &c.ModelChannels }, strings.TrimSpace),
@@ -284,6 +305,17 @@ func intSetter(key string, field func(*Config) *int) func(*Config, string) error
 		parsed, err := parsePositiveInt(key, value)
 		if err != nil {
 			return err
+		}
+		*field(c) = parsed
+		return nil
+	}
+}
+
+func nonNegativeIntSetter(key string, field func(*Config) *int) func(*Config, string) error {
+	return func(c *Config, value string) error {
+		parsed, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || parsed < 0 {
+			return fmt.Errorf("%s 必须是 0 或正整数", key)
 		}
 		*field(c) = parsed
 		return nil
@@ -398,8 +430,20 @@ var configChecks = []configCheck{
 		return nil
 	}},
 	{[]string{"ROUTING_STRATEGY"}, func(c Config) error {
-		if c.RoutingStrategy != "round-robin" && c.RoutingStrategy != "fill-first" {
-			return fmt.Errorf("ROUTING_STRATEGY 必须是 round-robin 或 fill-first")
+		if c.RoutingStrategy != "round-robin" && c.RoutingStrategy != "fill-first" && c.RoutingStrategy != "smart" {
+			return fmt.Errorf("ROUTING_STRATEGY 必须是 round-robin、fill-first 或 smart")
+		}
+		return nil
+	}},
+	{[]string{"SMART_SOFT_RPM", "SMART_HARD_RPM"}, func(c Config) error {
+		if c.SmartSoftRPM < 0 {
+			return fmt.Errorf("SMART_SOFT_RPM 必须是 0 或正整数")
+		}
+		if c.SmartHardRPM < 0 {
+			return fmt.Errorf("SMART_HARD_RPM 必须是 0 或正整数")
+		}
+		if c.SmartHardRPM > 0 && c.SmartSoftRPM > c.SmartHardRPM {
+			return fmt.Errorf("SMART_SOFT_RPM 不能大于 SMART_HARD_RPM")
 		}
 		return nil
 	}},
@@ -624,6 +668,9 @@ func (c Config) envValues() map[string]string {
 		"WARM_STARTUP_CONCURRENCY": strconv.Itoa(c.WarmStartupConcurrency),
 		"PER_ACCOUNT_CONCURRENCY":  strconv.Itoa(c.PerAccountConcurrency),
 		"ROUTING_STRATEGY":         c.RoutingStrategy,
+		"SMART_SOFT_RPM":           strconv.Itoa(c.SmartSoftRPM),
+		"SMART_HARD_RPM":           strconv.Itoa(c.SmartHardRPM),
+		"QUOTA_AUTO_FREEZE":        strconv.FormatBool(c.QuotaAutoFreeze),
 		"ACCOUNT_ORDER":            c.AccountOrder,
 		"MAX_ACCOUNT_SWITCHES":     strconv.Itoa(c.MaxAccountSwitches),
 		"UPSTREAM_CHANNELS":        strings.Join(c.UpstreamChannels, ","),

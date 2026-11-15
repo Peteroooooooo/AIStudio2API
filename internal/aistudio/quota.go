@@ -199,3 +199,13 @@ func nextQuotaDay(now time.Time) time.Time {
 	local := now.In(location)
 	return time.Date(local.Year(), local.Month(), local.Day()+1, 0, 0, 0, 0, location)
 }
+
+// LastQuotaDayStart 返回 now 所在美国太平洋时间额度日（00:00 America/Los_Angeles）的开始时刻
+func LastQuotaDayStart(now time.Time) time.Time {
+	location, err := time.LoadLocation(quotaResetTimezone)
+	if err != nil {
+		panic(err)
+	}
+	local := now.In(location)
+	return time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, location)
+}

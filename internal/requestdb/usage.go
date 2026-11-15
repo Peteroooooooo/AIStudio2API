@@ -595,3 +595,35 @@ func (store *Store) options(ctx context.Context, segments []segment) (map[string
 	}
 	return options, nil
 }
+
+// AccountDailyStats 记录单个账户在当前额度周期内的请求数与 token 总量
+type AccountDailyStats struct {
+	Requests int64
+	Tokens   int64
+}
+
+// AccountUsageSince 返回 since 以来各账户的请求数与总 token 数，按小写账户标签索引
+func (store *Store) AccountUsageSince(ctx context.Context, since time.Time) (map[string]AccountDailyStats, error) {
+	if store == nil {
+		return nil, nil
+	}
+	rows, err := store.db.QueryContext(ctx,
+		`SELECT LOWER(account), COUNT(*), COALESCE(SUM(total_tokens), 0)
+		 FROM requests WHERE time >= ? AND account != '' AND state != 'cancelled'
+		 GROUP BY LOWER(account)`,
+		since.UnixMilli(),
+	)
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string]AccountDailyStats)
+	for rows.Next() {
+		var account string
+		var stats AccountDailyStats
+		if err := rows.Scan(&account, &stats.Requests, &stats.Tokens); err != nil {
+			return nil, errors.Join(err, rows.Close())
+		}
+		result[account] = stats
+	}
+	return result, errors.Join(rows.Err(), rows.Close())
+}

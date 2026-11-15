@@ -7,6 +7,7 @@ import type {
   AccountLoginInput,
   AccountRefresh,
   AccountTask,
+  AccountTestResult,
   AdminEvent,
   ChromeImportInput,
   CookieAccountsInput,
@@ -207,6 +208,11 @@ export const api = {
   refreshAccount: (id: string) =>
     requestJSON<AccountRefresh>(`/api/accounts/${encodeURIComponent(id)}/refresh`, {
       method: 'POST',
+    }),
+  testAccount: (id: string, model = '') =>
+    requestJSON<AccountTestResult>(`/api/accounts/${encodeURIComponent(id)}/test`, {
+      method: 'POST',
+      body: jsonBody(model ? { model } : {}),
     }),
   startService: () => requestJSON<ServiceStatus>('/api/control/start', { method: 'POST' }),
   stopService: () => requestJSON<ServiceStatus>('/api/control/stop', { method: 'POST' }),

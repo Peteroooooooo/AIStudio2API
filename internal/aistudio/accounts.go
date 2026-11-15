@@ -348,6 +348,14 @@ type Account struct {
 	assistantBusy bool
 }
 
+// QuotaFreeze 表示账户因达到每日或套餐限额而被自动冻结的摘要
+type QuotaFreeze struct {
+	Until  time.Time `json:"until"`
+	Kind   string    `json:"kind"`
+	Scopes []string  `json:"scopes,omitempty"`
+	Global bool      `json:"global,omitempty"`
+}
+
 // AccountStatus 表示管理界面使用的脱敏账户状态
 type AccountStatus struct {
 	ID          string                   `json:"id"`
@@ -361,6 +369,7 @@ type AccountStatus struct {
 	Models      []string                 `json:"models"`
 	BenefitTier string                   `json:"benefit_tier"`
 	Cooldowns   map[string]CooldownState `json:"-"`
+	QuotaFreeze *QuotaFreeze             `json:"quota_freeze,omitempty"`
 	LastUsed    *time.Time               `json:"last_used,omitempty"`
 	Message     string                   `json:"message,omitempty"`
 	Directory   string                   `json:"-"`
@@ -401,8 +410,14 @@ type AccountSelection struct {
 	PreferredChannel   Channel
 	// IgnoreQuotaCooldown 为 true 时套餐限额与每日限额冷却中的账户照常参与选号
 	IgnoreQuotaCooldown bool
-	anyTier             bool
-	anyState            bool
+	// StrictQuotaFreeze 为 true 时禁止 IgnoreQuotaCooldown 绕过套餐或每日限额冷却
+	StrictQuotaFreeze bool
+	// BypassCooldown 为 true 时绕过冷却与冻结限制（仅用于管理端手动探活测试）
+	BypassCooldown bool
+	// SessionKey 用于 smart 策略下保持同一会话的隐式缓存粘性
+	SessionKey string
+	anyTier    bool
+	anyState   bool
 }
 
 const preferredBootstrapModelID = "gemini-flash-latest"
@@ -495,6 +510,7 @@ type AccountPool struct {
 	apiKeyAccounts        map[string][]string
 	modelAccounts         map[string][]string
 	accountOrder          map[string]int
+	smart                 *smartTracker
 	changed               chan struct{}
 	// sessionCheck 以官网页面的方式打开 AI Studio 检查账户会话，为空时认证失败直接标记需要重新登录
 	sessionCheck func(context.Context, *Account) error
@@ -516,6 +532,8 @@ type AccountLease struct {
 	channel               Channel
 	// ignoreQuotaCooldown 表示租约在全部账户冷却时取自套餐限额或每日限额冷却中的账户，这两种冷却不阻止它发送
 	ignoreQuotaCooldown bool
+	// bypassCooldown 表示手动探活测试租约，跳过全部冷却检查
+	bypassCooldown bool
 	// assistantDone 表示本租约的写代码助手生成已结束，账户已可接其他 -build 请求
 	assistantDone bool
 	operation     sync.Mutex
@@ -954,7 +972,9 @@ func NewAccountPool(accounts []*Account, perAccountConcurrency int) *AccountPool
 		accounts: append([]*Account(nil), accounts...), byID: make(map[string]*Account, len(accounts)),
 		resources: make(map[string]string), perAccountConcurrency: perAccountConcurrency, changed: make(chan struct{}),
 		routingStrategy: "round-robin", lastPicked: make(map[string]string), lastPickedChannel: make(map[string]Channel),
+		smart: newSmartTracker(),
 	}
+	now := time.Now()
 	for _, account := range p.accounts {
 		if account.runtime.Cooldowns == nil {
 			account.runtime.Cooldowns = make(map[string]CooldownState)
@@ -964,6 +984,12 @@ func NewAccountPool(accounts []*Account, perAccountConcurrency int) *AccountPool
 		}
 		if account.runtime.ModelAccess == nil {
 			account.runtime.ModelAccess = make(map[string]ModelAccess)
+		}
+		for _, cd := range account.runtime.Cooldowns {
+			if strings.HasPrefix(cd.Reason, PlanLimitKind) {
+				p.smart.markRollingQuota(account.ID, now)
+				break
+			}
 		}
 		p.byID[account.ID] = account
 		for resourceID := range account.runtime.Resources {
@@ -1553,6 +1579,9 @@ func (l *AccountLease) confirmAuthenticationFailureAt(ctx context.Context, cause
 
 // CoolingDown 返回租约账户当前是否处于全局或指定模型的冷却
 func (l *AccountLease) CoolingDown(modelID string) bool {
+	if l.bypassCooldown {
+		return false
+	}
 	scope := l.CooldownScope(strings.TrimPrefix(strings.TrimSpace(modelID), "models/"))
 	l.pool.mu.Lock()
 	defer l.pool.mu.Unlock()
@@ -1560,7 +1589,8 @@ func (l *AccountLease) CoolingDown(modelID string) bool {
 	if account == nil {
 		return false
 	}
-	_, active := selectionCooldown(account, scope, AccountSelection{IgnoreQuotaCooldown: l.ignoreQuotaCooldown}, time.Now())
+	strictFreeze := l.pool.smart == nil || l.pool.smart.quotaAutoFreeze
+	_, active := selectionCooldown(account, scope, AccountSelection{IgnoreQuotaCooldown: l.ignoreQuotaCooldown, StrictQuotaFreeze: strictFreeze}, time.Now())
 	return active
 }
 
@@ -2393,7 +2423,15 @@ func (p *AccountPool) MarkQuotaCooldownIfGeneration(
 		currentAccess.CheckedAt = checkedAt
 		runtimeState.ModelAccess[modelAccessScope] = currentAccess
 		runtimeState.Cooldowns[modelAccessScope] = next
-		return true, nil, nil
+		var apply func(*Account)
+		if cooldown.Kind == PlanLimitKind {
+			apply = func(acc *Account) {
+				if p.smart != nil {
+					p.smart.markRollingQuota(acc.ID, now)
+				}
+			}
+		}
+		return true, apply, nil
 	})
 	return until, changed, err
 }
@@ -2474,6 +2512,88 @@ func (p *AccountPool) ClearCooldown(accountID string, scope string) error {
 		return true, nil, nil
 	})
 	return err
+}
+
+// ClearAccountTestCooldowns 在管理端手动测试对话成功后解除账户在该模型与全局上的冷却/限额冻结并恢复就绪状态
+func (p *AccountPool) ClearAccountTestCooldowns(accountID string, modelID string) ([]string, error) {
+	modelID = strings.TrimPrefix(strings.TrimSpace(modelID), "models/")
+	var cleared []string
+	_, err := p.updateRuntime(accountID, func(account *Account, runtimeState *accountRuntimeState) (bool, func(*Account), error) {
+		changed := false
+		scopes := []string{globalCooldownKey}
+		if modelID != "" {
+			canonical := canonicalAccountModelID(account, modelID)
+			scopes = append(scopes, modelID)
+			if canonical != modelID {
+				scopes = append(scopes, canonical)
+			}
+			scopes = append(scopes, ChannelCooldownScope(ChannelBuild, modelID))
+			if canonical != modelID {
+				scopes = append(scopes, ChannelCooldownScope(ChannelBuild, canonical))
+			}
+		}
+		now := time.Now()
+		for _, scope := range scopes {
+			if cd, exists := runtimeState.Cooldowns[scope]; exists {
+				if cd.Active(now) {
+					cleared = append(cleared, scope)
+				}
+				delete(runtimeState.Cooldowns, scope)
+				changed = true
+			}
+		}
+		// 若账户还有其他仅因每日/套餐限额冻结的模型作用域，全局探活仅解除被测模型及全局冻结，不误解未测模型的限额
+		if runtimeState.Restricted != "" && verificationRestriction(runtimeState.Restricted) {
+			runtimeState.Restricted = ""
+			changed = true
+		}
+		apply := func(acc *Account) {
+			if acc.Config.Enabled && (acc.State == AccountUnavailable || acc.State == AccountRestricted || acc.State == AccountCooldown) {
+				acc.State = AccountReady
+				acc.stateMessage = ""
+			}
+			if p.smart != nil {
+				p.smart.clearPenalty(acc.ID, now)
+			}
+		}
+		return changed, apply, nil
+	})
+	return cleared, err
+}
+
+// PruneExpiredCooldowns 清理账户已过期的冷却记录并通知状态变化，返回是否有冷却刚解除
+func (p *AccountPool) PruneExpiredCooldowns(now time.Time) bool {
+	p.mu.Lock()
+	var expiredIDs []string
+	for _, account := range p.accounts {
+		for _, cd := range account.runtime.Cooldowns {
+			if !cd.Until.IsZero() && !cd.Active(now) {
+				expiredIDs = append(expiredIDs, account.ID)
+				break
+			}
+		}
+	}
+	p.mu.Unlock()
+	if len(expiredIDs) == 0 {
+		return false
+	}
+	anyChanged := false
+	for _, accountID := range expiredIDs {
+		changed, err := p.updateRuntime(accountID, func(_ *Account, runtimeState *accountRuntimeState) (bool, func(*Account), error) {
+			removed := false
+			for key, cd := range runtimeState.Cooldowns {
+				if !cd.Until.IsZero() && !cd.Active(now) {
+					delete(runtimeState.Cooldowns, key)
+					removed = true
+				}
+			}
+			return removed, nil, nil
+		})
+		if err == nil && changed {
+			anyChanged = true
+		}
+	}
+	return anyChanged
 }
 
 // BindResourceKind 将带类型的资源 ID 固定到创建账户
@@ -2731,6 +2851,7 @@ func (p *AccountPool) Status() []AccountStatus {
 			Models:      models,
 			BenefitTier: tier,
 			Cooldowns:   cloneCooldowns(account.runtime.Cooldowns),
+			QuotaFreeze: accountQuotaFreeze(account.runtime.Cooldowns, now),
 			Message:     message,
 			Directory:   account.Directory,
 
@@ -2872,7 +2993,7 @@ func (p *AccountPool) tryAcquireLocked(selection AccountSelection, now time.Time
 			candidate.channel == ChannelAssistant && account.assistantBusy {
 			continue
 		}
-		if selection.ResourceID == "" && !selection.anyState {
+		if selection.ResourceID == "" && !selection.anyState && !selection.BypassCooldown {
 			if cooldown, active := selectionCooldown(account, ChannelCooldownScope(candidate.channel, selectionAccessScope(selection)), selection, now); active {
 				if earliest.IsZero() || cooldown.Until.Before(earliest) {
 					earliest = cooldown.Until
@@ -2906,10 +3027,13 @@ func (p *AccountPool) tryAcquireLocked(selection AccountSelection, now time.Time
 		account.LastUsed = now
 		p.lastPicked[selectionAccessScope(selection)] = account.ID
 		p.lastPickedChannel[selectionAccessScope(selection)] = candidate.channel
+		if !selection.BypassCooldown && p.smart != nil {
+			p.smart.recordDispatch(account.ID, selection.SessionKey, now)
+		}
 		return &AccountLease{
 			pool: p, account: account, authGeneration: account.authGeneration,
 			modelAccessGeneration: account.modelAccessGeneration, refreshRuntime: refreshRuntime, checkedAt: now.UTC(),
-			channel: candidate.channel, ignoreQuotaCooldown: selection.IgnoreQuotaCooldown,
+			channel: candidate.channel, ignoreQuotaCooldown: selection.IgnoreQuotaCooldown, bypassCooldown: selection.BypassCooldown,
 		}, time.Time{}, true, nil
 	}
 	return nil, earliest, waitable, nil
@@ -3067,10 +3191,56 @@ func (p *AccountPool) selectionIndicesLocked(selection AccountSelection) ([]int,
 		start := sort.Search(len(indices), func(index int) bool { return p.accounts[indices[index]].ID > last })
 		return append(indices[start:], indices[:start]...), nil
 	}
+	if p.routingStrategy == "smart" {
+		p.sortSmartIndicesLocked(indices, selection, time.Now())
+		return indices, nil
+	}
 	sort.SliceStable(indices, func(left, right int) bool {
 		return p.accountRankLocked(p.accounts[indices[left]].ID) < p.accountRankLocked(p.accounts[indices[right]].ID)
 	})
 	return indices, nil
+}
+
+// AccountTestModel 返回手动测试账户对话时优先使用的模型 ID（优先测试当前处于限额/冷却的对话模型，否则选可用对话模型）
+func (p *AccountPool) AccountTestModel(accountID string) (string, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	account := p.byID[strings.TrimSpace(accountID)]
+	if account == nil {
+		return "", fmt.Errorf("%w: %s", ErrAccountNotFound, accountID)
+	}
+	if !account.Config.Enabled {
+		return "", fmt.Errorf("账户 %s 已停用，请先启用后再测试", account.Config.Label)
+	}
+	now := time.Now()
+	// 1. 若有正在限额或冷却的模型，优先探测该模型以确认是否已恢复
+	var cooledModels []string
+	for scope, cd := range account.runtime.Cooldowns {
+		if scope == globalCooldownKey || !cd.Active(now) {
+			continue
+		}
+		modelID := strings.TrimPrefix(scope, string(ChannelBuild)+":")
+		if waaBootstrapModelEligible(account, modelID) {
+			cooledModels = append(cooledModels, canonicalAccountModelID(account, modelID))
+		}
+	}
+	if len(cooledModels) > 0 {
+		sort.Strings(cooledModels)
+		return cooledModels[0], nil
+	}
+	// 2. 优先使用官网标准引导/轻量模型（返回真实模型 ID，避免将兼容别名直接发往上游）
+	for _, preferred := range []string{preferredBootstrapModelID, "gemini-flash-lite-latest", "gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-2.5-flash"} {
+		if waaBootstrapModelEligible(account, preferred) {
+			return canonicalAccountModelID(account, preferred), nil
+		}
+	}
+	// 3. 回退到首个可用的对话模型
+	for _, model := range account.Models {
+		if waaBootstrapModelEligible(account, model.ID) {
+			return model.ID, nil
+		}
+	}
+	return preferredBootstrapModelID, nil
 }
 
 // accountRankLocked 返回账户在 ACCOUNT_ORDER 中的位置，未列出的账户排在最后
@@ -3881,8 +4051,11 @@ func accountCatalogFingerprint(tier BenefitTier, models []Model) (string, error)
 	return fmt.Sprintf("%x", sha256.Sum256(data)), nil
 }
 
-// selectionCooldown 返回账户在作用域上对选择生效的冷却，IgnoreQuotaCooldown 的选择不受套餐限额与每日限额冷却限制，只受其中记录的回退冷却限制
+// selectionCooldown 返回账户在作用域上对选择生效的冷却，IgnoreQuotaCooldown 的选择不受套餐限额与每日限额冷却限制（StrictQuotaFreeze 为 true 时禁止绕过），BypassCooldown 跳过全部冷却
 func selectionCooldown(account *Account, scope string, selection AccountSelection, now time.Time) (CooldownState, bool) {
+	if selection.BypassCooldown {
+		return CooldownState{}, false
+	}
 	var selected CooldownState
 	for _, key := range []string{globalCooldownKey, scope} {
 		if key == "" {
@@ -3892,7 +4065,7 @@ func selectionCooldown(account *Account, scope string, selection AccountSelectio
 		if !exists || !cooldown.Active(now) {
 			continue
 		}
-		if selection.IgnoreQuotaCooldown && RequestQuotaCooldown(cooldown.Reason) {
+		if selection.IgnoreQuotaCooldown && !selection.StrictQuotaFreeze && RequestQuotaCooldown(cooldown.Reason) {
 			if cooldown.Fallback == nil || !cooldown.Fallback.Active(now) {
 				continue
 			}
@@ -3903,6 +4076,44 @@ func selectionCooldown(account *Account, scope string, selection AccountSelectio
 		}
 	}
 	return selected, !selected.Until.IsZero()
+}
+
+func accountQuotaFreeze(cooldowns map[string]CooldownState, now time.Time) *QuotaFreeze {
+	if len(cooldowns) == 0 {
+		return nil
+	}
+	var until time.Time
+	var kind string
+	var scopes []string
+	global := false
+	for scope, cd := range cooldowns {
+		if !cd.Active(now) || !RequestQuotaCooldown(cd.Reason) {
+			continue
+		}
+		if scope == globalCooldownKey {
+			global = true
+		} else {
+			scopes = append(scopes, scope)
+		}
+		cdKind := DailyLimitKind
+		if strings.HasPrefix(cd.Reason, PlanLimitKind) {
+			cdKind = PlanLimitKind
+		}
+		if until.IsZero() || cd.Until.Before(until) {
+			until = cd.Until
+			kind = cdKind
+		}
+	}
+	if until.IsZero() {
+		return nil
+	}
+	sort.Strings(scopes)
+	return &QuotaFreeze{
+		Until:  until,
+		Kind:   kind,
+		Scopes: scopes,
+		Global: global,
+	}
 }
 
 func accountCooldown(account *Account, modelID string, now time.Time) (CooldownState, bool) {

@@ -3,7 +3,14 @@ import type { UsageDimension, UsageFilters, UsageStats } from '@/types'
 
 // relativePresets 与 calendarPresets 是相对时间与日历两类快捷范围
 export const relativePresets = ['1h', '6h', '24h', '7d', '30d', '90d'] as const
-export const calendarPresets = ['today', 'yesterday', 'week', 'month', 'lastMonth'] as const
+export const calendarPresets = [
+  'today',
+  'yesterday',
+  'quotaCycle',
+  'week',
+  'month',
+  'lastMonth',
+] as const
 export type RangePreset =
   | (typeof relativePresets)[number]
   | (typeof calendarPresets)[number]
@@ -124,6 +131,39 @@ export function localInput(date: Date): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
 
+// lastQuotaDayStart 计算最近一次美西时间（America/Los_Angeles，自动适配 PST 16:00 / PDT 15:00）零点的本地时间
+export function lastQuotaDayStart(now: Date): Date {
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Los_Angeles',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  })
+  const partMap = (d: Date) => {
+    const map: Record<string, number> = {}
+    for (const part of fmt.formatToParts(d)) {
+      if (part.type !== 'literal') map[part.type] = Number(part.value)
+    }
+    return map
+  }
+  const cur = partMap(now)
+  const year = cur.year!
+  const month = cur.month!
+  const day = cur.day!
+  // 美西零点约为 UTC 08:00 (PST) 或 UTC 07:00 (PDT)
+  const guess = Date.UTC(year, month - 1, day, 8, 0, 0)
+  const g = partMap(new Date(guess))
+  let diffHours = g.hour!
+  if (g.day !== day) {
+    diffHours = g.day! < day ? diffHours - 24 : diffHours + 24
+  }
+  return new Date(guess - diffHours * 3_600_000 - (g.minute ?? 0) * 60_000 - (g.second ?? 0) * 1000)
+}
+
 // resolveRange 把视图状态解析为具体的起止时间，自定义范围无效时返回 null
 export function resolveRange(
   state: Pick<UsageViewState, 'range' | 'from' | 'to'>,
@@ -138,6 +178,8 @@ export function resolveRange(
         from: new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1),
         to: midnight,
       }
+    case 'quotaCycle':
+      return { from: lastQuotaDayStart(now), to: now }
     case 'week': {
       const weekday = (now.getDay() + 6) % 7
       return {

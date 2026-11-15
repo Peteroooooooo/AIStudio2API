@@ -80,6 +80,12 @@ func ContextWithAPIKey(ctx context.Context, key string) context.Context {
 	return context.WithValue(ctx, apiKeyContextKey{}, key)
 }
 
+// APIKeyFromContext 返回请求上下文中携带的 API key
+func APIKeyFromContext(ctx context.Context) string {
+	key, _ := ctx.Value(apiKeyContextKey{}).(string)
+	return key
+}
+
 // accountContextKey 是请求上下文中指定账户的键
 type accountContextKey struct{}
 
@@ -122,7 +128,11 @@ func (p *AccountPool) scopedSelection(ctx context.Context, selection AccountSele
 	p.mu.Lock()
 	keyScope, keyBound := p.apiKeyAccounts[key]
 	modelScope, modelBound := p.modelAccounts[strings.TrimPrefix(strings.TrimSpace(selection.ModelID), "models/")]
+	strictFreeze := p.smart == nil || p.smart.quotaAutoFreeze
 	p.mu.Unlock()
+	if strictFreeze {
+		selection.StrictQuotaFreeze = true
+	}
 	if keyBound {
 		selection.AllowedAccountIDs = narrowedAccounts(selection.AllowedAccountIDs, keyScope)
 	}

@@ -20,6 +20,13 @@ export type AccountState =
   | 'unavailable'
   | 'disabled'
 
+export interface QuotaFreeze {
+  until: string
+  kind: string
+  scopes?: string[]
+  global?: boolean
+}
+
 export interface Account {
   id: string
   label: string
@@ -32,10 +39,22 @@ export interface Account {
   models: string[]
   benefit_tier: string
   message: string
+  quota_freeze?: QuotaFreeze
   // pairing_renewed_at 是远程添加的账户最近一次由原电脑续签的时间
   pairing_renewed_at?: string
   // transition 是账户启停的后台收尾阶段：draining 等待在途请求结束并关闭 Worker，syncing 同步模型目录
   transition?: 'draining' | 'syncing'
+}
+
+export interface AccountTestResult {
+  ok: boolean
+  account: Account
+  model: string
+  reply?: string
+  cleared_cooldowns?: number
+  latency_ms: number
+  status_code?: number
+  error?: string
 }
 
 // AccountExit 是一个账户出口代理的公网 IP 与按 IP 定位的国家，proxy 为空时是直连，查询失败时 error 为原因
@@ -421,7 +440,10 @@ export interface ServiceConfig {
   warm_startup_concurrency: number
   per_account_concurrency: number
   max_account_switches: number
-  routing_strategy: 'round-robin' | 'fill-first'
+  routing_strategy: 'round-robin' | 'fill-first' | 'smart'
+  smart_soft_rpm: number
+  smart_hard_rpm: number
+  quota_auto_freeze: boolean
   account_order: string
   upstream_channels: UpstreamChannel[]
   model_mapping: string

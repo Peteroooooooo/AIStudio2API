@@ -77,6 +77,9 @@ const sections: {
       'warm_startup_concurrency',
       'per_account_concurrency',
       'routing_strategy',
+      'smart_soft_rpm',
+      'smart_hard_rpm',
+      'quota_auto_freeze',
       'account_order',
       'max_account_switches',
     ],
@@ -745,7 +748,52 @@ async function saveConfig(): Promise<void> {
               <UiSelect id="setting-routing" v-model="form.routing_strategy" :class="inputClass">
                 <option value="round-robin">{{ t('settings.routingRoundRobin') }}</option>
                 <option value="fill-first">{{ t('settings.routingFillFirst') }}</option>
+                <option value="smart">{{ t('settings.routingSmart') }}</option>
               </UiSelect>
+            </SettingRow>
+            <SettingRow
+              v-if="form.routing_strategy === 'smart'"
+              :label="t('settings.smartSoftRPM')"
+              control-id="setting-smart-soft-rpm"
+              :description="t('settings.smartSoftRPMHelp')"
+              effect="immediate"
+              :changed="changedFields.has('smart_soft_rpm')"
+              :env="environmentKey('smart_soft_rpm')"
+            >
+              <input
+                id="setting-smart-soft-rpm"
+                v-model.number="form.smart_soft_rpm"
+                :class="inputClass"
+                type="number"
+                min="0"
+              />
+            </SettingRow>
+            <SettingRow
+              v-if="form.routing_strategy === 'smart'"
+              :label="t('settings.smartHardRPM')"
+              control-id="setting-smart-hard-rpm"
+              :description="t('settings.smartHardRPMHelp')"
+              effect="immediate"
+              :changed="changedFields.has('smart_hard_rpm')"
+              :env="environmentKey('smart_hard_rpm')"
+            >
+              <input
+                id="setting-smart-hard-rpm"
+                v-model.number="form.smart_hard_rpm"
+                :class="inputClass"
+                type="number"
+                min="0"
+              />
+            </SettingRow>
+            <SettingRow
+              :label="t('settings.quotaAutoFreeze')"
+              control-id="setting-quota-auto-freeze"
+              :description="t('settings.quotaAutoFreezeHelp')"
+              effect="immediate"
+              :changed="changedFields.has('quota_auto_freeze')"
+              :env="environmentKey('quota_auto_freeze')"
+            >
+              <UiSwitch id="setting-quota-auto-freeze" v-model="form.quota_auto_freeze" />
             </SettingRow>
             <SettingRow
               v-if="form.routing_strategy === 'fill-first' && accounts.length > 1"
@@ -766,7 +814,7 @@ async function saveConfig(): Promise<void> {
               :label="t('settings.maxAccountSwitches')"
               control-id="setting-max-account-switches"
               :description="t('settings.maxAccountSwitchesHelp')"
-              effect="service"
+              effect="immediate"
               :changed="changedFields.has('max_account_switches')"
               :env="environmentKey('max_account_switches')"
             >

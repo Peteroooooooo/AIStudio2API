@@ -196,6 +196,13 @@ export const messages: Record<TranslationKey, string> = {
   'accounts.draining': 'Disabling · finishing up',
   'accounts.syncing': 'Enabling · syncing models',
   'accounts.refreshFailed': 'Refresh failed',
+  'accounts.test': 'Chat test',
+  'accounts.testing': 'Testing…',
+  'accounts.testFailed': 'Test failed',
+  'accounts.testPassed': '{name} test passed ({model}, {latency}ms): {reply}',
+  'accounts.testPassedUnfrozen': '{name} test passed & unfrozen ({model}, {latency}ms): {reply}',
+  'accounts.testFailedNotice': '{name} test failed: {error}',
+  'accounts.freezeUntil': 'Frozen until {time}',
   'accounts.saved': 'Account saved',
   'accounts.remoteAdd': 'Add remotely',
   'accounts.remoteHttps':
@@ -445,8 +452,18 @@ export const messages: Record<TranslationKey, string> = {
   'settings.accountOrderUp': 'Move {account} up',
   'settings.accountOrderDown': 'Move {account} down',
   'settings.routingFillFirst': 'Fill first',
+  'settings.routingSmart': 'Smart',
   'settings.routingHelp':
-    'Round robin rotates accounts. Fill first stays on one account until it is full or unavailable.',
+    'Round robin rotates accounts. Fill first stays on one account. Smart balances idle-first workers, 60s RPM limits, prompt-cache session affinity, account tier, and daily usage.',
+  'settings.smartSoftRPM': 'Smart routing soft RPM',
+  'settings.smartSoftRPMHelp':
+    'Deprioritizes an account once its 60s request count reaches this soft threshold (0 disables)',
+  'settings.smartHardRPM': 'Smart routing hard RPM',
+  'settings.smartHardRPMHelp':
+    'Strongly avoids an account once its 60s request count reaches this hard limit unless all accounts are saturated (0 disables)',
+  'settings.quotaAutoFreeze': 'Strict quota freeze & auto-recover',
+  'settings.quotaAutoFreezeHelp':
+    'Strictly freezes accounts hitting Daily limit or Plan limit until quota reset (bypassable only via manual Chat test) and auto-recovers at reset time',
   'settings.waaBackend': 'WAA backend',
   'settings.waaBackendCamoufox': 'Camoufox',
   'settings.waaBackendSpiderMonkey': 'SpiderMonkey',
@@ -1935,6 +1952,7 @@ export const messages: Record<TranslationKey, string> = {
   'usage.range.90d': 'Last 90 days',
   'usage.range.today': 'Today',
   'usage.range.yesterday': 'Yesterday',
+  'usage.range.quotaCycle': 'Quota cycle (PT 00:00)',
   'usage.range.week': 'This week',
   'usage.range.month': 'This month',
   'usage.range.lastMonth': 'Last month',

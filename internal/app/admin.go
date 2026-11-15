@@ -941,6 +941,40 @@ func (admin *runtimeAdmin) RefreshAccount(_ context.Context, accountID string) (
 	}, nil
 }
 
+// TestAccount 在管理端主动对指定账户发起一次最小真实对话探活（跳过当前冷却/限额冻结），成功时自动解冻并推送快照
+func (admin *runtimeAdmin) TestAccount(ctx context.Context, accountID string, modelID string) (api.AdminAccountTest, error) {
+	result, err := admin.service.testAccountChat(ctx, accountID, modelID)
+	if err != nil {
+		return api.AdminAccountTest{}, accountOperationError(err)
+	}
+	account, accErr := admin.account(accountID)
+	if accErr != nil {
+		return api.AdminAccountTest{}, accErr
+	}
+	if result.OK {
+		admin.requests.log(account.Label, "INFO", "账户对话测试成功", "model", result.Model, "latency_ms", result.LatencyMS)
+	} else {
+		admin.requests.log(account.Label, "WARN", "账户对话测试失败", "model", result.Model, "latency_ms", result.LatencyMS, "error", result.Err)
+	}
+	cooldowns, _ := admin.Cooldowns(ctx)
+	admin.requests.publish(api.AdminEvent{Type: "cooldowns", Data: cooldowns})
+	accounts, _ := admin.Accounts(ctx)
+	admin.requests.publish(api.AdminEvent{Type: "accounts", Data: map[string]any{"accounts": accounts}})
+	out := api.AdminAccountTest{
+		OK:               result.OK,
+		Account:          account,
+		Model:            result.Model,
+		Reply:            result.Reply,
+		ClearedCooldowns: result.ClearedCooldowns,
+		LatencyMS:        result.LatencyMS,
+		StatusCode:       result.StatusCode,
+	}
+	if result.Err != nil {
+		out.Error = result.Err.Error()
+	}
+	return out, nil
+}
+
 // StartService 使用管理器提供的启动生命周期启动生成服务
 func (admin *runtimeAdmin) StartService(ctx context.Context) (api.AdminStatus, error) {
 	startedAt := time.Now()
@@ -1074,6 +1108,7 @@ func adminAccountDTO(status aistudio.AccountStatus) api.AdminAccount {
 		ID: status.ID, Label: status.Label, Enabled: status.Enabled, State: string(status.State),
 		Proxy: status.Proxy, Egress: status.Egress, Locale: status.Locale, Timezone: status.Timezone,
 		Models: status.Models, BenefitTier: status.BenefitTier, Message: status.Message,
+		QuotaFreeze:      status.QuotaFreeze,
 		PairingRenewedAt: pairingRenewedAt(status.Directory),
 		Transition:       string(status.Transition), ActiveRequests: status.ActiveRequests,
 	}
@@ -1156,6 +1191,9 @@ func (admin *runtimeAdmin) UpdateRuntimeConfig(_ context.Context, value api.Runt
 		WarmStartupConcurrency: value.WarmStartupConcurrency,
 		PerAccountConcurrency:  value.PerAccountConcurrency,
 		RoutingStrategy:        value.RoutingStrategy,
+		SmartSoftRPM:           value.SmartSoftRPM,
+		SmartHardRPM:           value.SmartHardRPM,
+		QuotaAutoFreeze:        value.QuotaAutoFreeze,
 		AccountOrder:           strings.TrimSpace(value.AccountOrder),
 		MaxAccountSwitches:     value.MaxAccountSwitches,
 		UpstreamChannels:       value.UpstreamChannels,
@@ -1174,9 +1212,26 @@ func (admin *runtimeAdmin) UpdateRuntimeConfig(_ context.Context, value api.Runt
 		return api.RuntimeConfig{}, err
 	}
 	admin.pool.SetRoutingStrategy(cfg.RoutingStrategy)
+	admin.pool.SetSmartConfig(aistudio.SmartConfig{
+		SoftRPM:         cfg.SmartSoftRPM,
+		HardRPM:         cfg.SmartHardRPM,
+		QuotaAutoFreeze: cfg.QuotaAutoFreeze,
+	})
 	admin.pool.SetAccountOrder(accountOrder(cfg.AccountOrder))
 	admin.pool.SetModelChannels(modelChannels(cfg.ModelChannels))
 	admin.pool.SetModelAccounts(modelAccounts(cfg.ModelAccounts))
+	if admin.service != nil {
+		admin.service.maxAccountSwitches = cfg.MaxAccountSwitches
+		if pooled, ok := admin.service.service.(*aistudio.PooledService); ok {
+			pooled.MaxAccountSwitches = cfg.MaxAccountSwitches
+		}
+	}
+	admin.config.MaxAccountSwitches = cfg.MaxAccountSwitches
+	admin.config.RoutingStrategy = cfg.RoutingStrategy
+	admin.config.SmartSoftRPM = cfg.SmartSoftRPM
+	admin.config.SmartHardRPM = cfg.SmartHardRPM
+	admin.config.QuotaAutoFreeze = cfg.QuotaAutoFreeze
+	admin.config.AccountOrder = cfg.AccountOrder
 	admin.requests.log("service", "INFO", "服务配置已保存")
 	models, _ := admin.CatalogModels(context.Background())
 	admin.requests.publish(api.AdminEvent{Type: "models", Data: map[string]any{"models": models}})
@@ -1472,6 +1527,9 @@ func runtimeConfigDTO(cfg config.Config) api.RuntimeConfig {
 		WarmStartupConcurrency: cfg.WarmStartupConcurrency,
 		PerAccountConcurrency:  cfg.PerAccountConcurrency,
 		RoutingStrategy:        cfg.RoutingStrategy,
+		SmartSoftRPM:           cfg.SmartSoftRPM,
+		SmartHardRPM:           cfg.SmartHardRPM,
+		QuotaAutoFreeze:        cfg.QuotaAutoFreeze,
 		AccountOrder:           cfg.AccountOrder,
 		MaxAccountSwitches:     cfg.MaxAccountSwitches,
 		UpstreamChannels:       cfg.UpstreamChannels,
@@ -1494,6 +1552,28 @@ func invalidConfigDTO(values []config.InvalidValue) []api.InvalidConfigValue {
 		result = append(result, api.InvalidConfigValue{Key: value.Key, Value: value.Value, Reason: value.Reason})
 	}
 	return result
+}
+
+// SeedSmartUsage 将本额度周期账户请求/Token 用量写入当前账户池的智能调度状态
+func (admin *runtimeAdmin) SeedSmartUsage(byLabel map[string]struct{ Requests, Tokens int64 }, now time.Time) {
+	if admin.pool != nil {
+		admin.pool.SeedDailyUsage(byLabel, now)
+	}
+}
+
+// PruneExpiredCooldowns 清理已到期的模型/账户冷却记录，若有记录被清理则主动向管理端推送冷却与账户快照
+func (admin *runtimeAdmin) PruneExpiredCooldowns(ctx context.Context, now time.Time) bool {
+	if admin.pool == nil {
+		return false
+	}
+	pruned := admin.pool.PruneExpiredCooldowns(now)
+	if pruned {
+		cooldowns, _ := admin.Cooldowns(ctx)
+		admin.requests.publish(api.AdminEvent{Type: "cooldowns", Data: cooldowns})
+		accounts, _ := admin.Accounts(ctx)
+		admin.requests.publish(api.AdminEvent{Type: "accounts", Data: map[string]any{"accounts": accounts}})
+	}
+	return pruned
 }
 
 var _ generationAdmin = (*runtimeAdmin)(nil)

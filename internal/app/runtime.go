@@ -65,6 +65,11 @@ func newRuntime(
 	requests.logStage("service", "INFO", api.LogStage{Name: "运行时装配", Step: 3, Steps: 3}, "创建协议客户端", egress...)
 	pool := aistudio.NewAccountPool(accounts, cfg.PerAccountConcurrency)
 	pool.SetRoutingStrategy(cfg.RoutingStrategy)
+	pool.SetSmartConfig(aistudio.SmartConfig{
+		SoftRPM:         cfg.SmartSoftRPM,
+		HardRPM:         cfg.SmartHardRPM,
+		QuotaAutoFreeze: cfg.QuotaAutoFreeze,
+	})
 	pool.SetAccountOrder(accountOrder(cfg.AccountOrder))
 	pool.SetUpstreamChannels(upstreamChannels(cfg.UpstreamChannels))
 	pool.SetModelChannels(modelChannels(cfg.ModelChannels))
@@ -99,6 +104,7 @@ func newRuntime(
 		Static:          transport,
 	})
 	pooled := aistudio.NewPooledService(pool, client)
+	pooled.MaxAccountSwitches = cfg.MaxAccountSwitches
 	pooled.BuildNativeNonstream = cfg.BuildNativeNonstream
 	pooled.YouTubeLinks = cfg.YouTubeLinks
 	pooled.DiscoverHiddenModels = cfg.DiscoverHiddenModels
@@ -1497,10 +1503,16 @@ func (service *trackedService) acquireWarmLease(ctx context.Context, selection a
 			(len(active) < service.workers.activeLimit() || service.workers.idleWarmVictim("") != "") {
 			preferred = selection.PreferredAccountID
 		}
-		warmAvailable := append(append([]string(nil), groups.WarmReady...), groups.WarmAvailable...)
-		if len(warmAvailable) > 0 && preferred == "" {
+		smartRouting := service.pool.IsSmartRouting()
+		var warmImmediate []string
+		if smartRouting {
+			warmImmediate = groups.WarmReady
+		} else {
+			warmImmediate = append(append([]string(nil), groups.WarmReady...), groups.WarmAvailable...)
+		}
+		if len(warmImmediate) > 0 && preferred == "" {
 			candidate := selection
-			candidate.AllowedAccountIDs = warmAvailable
+			candidate.AllowedAccountIDs = warmImmediate
 			lease, _, acquireErr := service.pool.TryAcquireFor(ctx, candidate)
 			if errors.Is(acquireErr, aistudio.ErrAccountNotFound) && !fixedAccount {
 				continue
@@ -1515,10 +1527,12 @@ func (service *trackedService) acquireWarmLease(ctx context.Context, selection a
 			}
 			continue
 		}
-		warmCandidates := len(warmAvailable) + len(groups.WarmBusy)
+		warmCandidates := len(groups.WarmReady) + len(groups.WarmAvailable) + len(groups.WarmBusy)
 		coolingVictim := len(active) >= service.workers.activeLimit() &&
 			service.workers.idleWarmVictimFor("", selection.ModelID, true) != ""
-		if len(groups.StandbyReady) > 0 && (len(active) < service.workers.activeLimit() || coolingVictim) && warmCandidates > 0 && !fixedAccount && preferred == "" {
+		// smart 模式下，若已无完全空闲的 warm worker（WarmReady==0），则直接尝试晋升 StandbyReady 或回退到 WarmAvailable，而不是先排队等扩容
+		allowExpandWait := !smartRouting || len(groups.WarmReady) > 0
+		if allowExpandWait && len(groups.StandbyReady) > 0 && (len(active) < service.workers.activeLimit() || coolingVictim) && warmCandidates > 0 && !fixedAccount && preferred == "" {
 			standby := groups.StandbyReady
 			if cold := service.workers.coldAccounts(standby); len(cold) > 0 {
 				standby = cold
@@ -1586,6 +1600,17 @@ func (service *trackedService) acquireWarmLease(ctx context.Context, selection a
 			}
 			continue
 		}
+		if smartRouting && len(groups.WarmAvailable) > 0 && preferred == "" {
+			candidate := selection
+			candidate.AllowedAccountIDs = groups.WarmAvailable
+			lease, _, acquireErr := service.pool.TryAcquireFor(ctx, candidate)
+			if errors.Is(acquireErr, aistudio.ErrAccountNotFound) && !fixedAccount {
+				continue
+			}
+			if lease != nil || acquireErr != nil {
+				return lease, acquireErr
+			}
+		}
 		// 还有未冷却的候选账户时等它空闲或让出 Worker，不改用冷却中的账户
 		if len(groups.WarmBusy) > 0 || len(groups.StandbyBusy) > 0 || opening || candidates > 0 {
 			if err := wait(schedulingRecheck); err != nil {
@@ -1595,8 +1620,9 @@ func (service *trackedService) acquireWarmLease(ctx context.Context, selection a
 		}
 		if !groups.EarliestCooldown.Until.IsZero() {
 			remaining := time.Until(groups.EarliestCooldown.Until)
-			if remaining > cooldownQueueLimit-*cooled || strings.HasPrefix(groups.EarliestCooldown.Reason, aistudio.AccountRejectionKind) {
-				if quotaFallback && !selection.IgnoreQuotaCooldown {
+			isRejection := strings.HasPrefix(groups.EarliestCooldown.Reason, aistudio.AccountRejectionKind)
+			if remaining > cooldownQueueLimit-*cooled || isRejection {
+				if quotaFallback && !selection.IgnoreQuotaCooldown && !isRejection && !service.pool.QuotaAutoFreeze() {
 					selection.IgnoreQuotaCooldown = true
 					continue
 				}
@@ -1946,6 +1972,9 @@ func (service *trackedService) generateWithRetry(
 		selection := aistudio.AccountSelection{
 			ModelID: modelID, Method: "generateContent",
 			AccountID: selectionAccountID, ResourceID: selectionResourceID, PreferredAccountID: preferredAccountID,
+		}
+		if unbound {
+			selection.SessionKey = aistudio.ComputeSessionKey(aistudio.APIKeyFromContext(requestCtx), modelID, request.System, request.Contents)
 		}
 		if resourceID != "" || request.Config.SpeechConfig != nil && request.Config.SpeechConfig.Mode != "" {
 			selection.PlaygroundOnly = true
@@ -2509,6 +2538,7 @@ func (service *trackedService) settleAttempt(
 	}
 	rejection, rejected := aistudio.AccountRejectionCooldown(err)
 	if rejected {
+		service.pool.RecordSmartRejection(accountID)
 		until, stateErr := service.markQuotaCooldown(requestID, modelID, lease, rejection)
 		if stateErr != nil {
 			err = errors.Join(err, stateErr)
@@ -2516,6 +2546,8 @@ func (service *trackedService) settleAttempt(
 		} else if !until.IsZero() && (retry.rejectionUntil.IsZero() || until.Before(retry.rejectionUntil)) {
 			retry.rejectionUntil = until
 		}
+	} else {
+		service.pool.RecordSmartFailure(accountID, quotaFailure)
 	}
 	var rpcErr *aistudio.RPCError
 	buildRejected := lease.Channel() == aistudio.ChannelBuild && service.pool.PlaygroundEnabled() && requestCtx.Err() == nil &&
@@ -2954,7 +2986,7 @@ func (service *trackedService) forwardEvents(
 	}
 }
 
-// settleStreamError 按首个事件之前的规则处理首个事件之后的上游错误：认证失败时确认账户会话，服务受限时标记账户，权限拒绝时冷却账户，403 协议错误码 7 与 401 改为账户暂时不可用的 503
+// settleStreamError 按首个事件之前的规则处理首个事件之后的上游错误：认证失败时确认账户会话，服务受限时标记账户，额度或权限拒绝时冷却账户，403 协议错误码 7 与 401 改为账户暂时不可用的 503
 func (service *trackedService) settleStreamError(requestCtx context.Context, requestID string, modelID string, lease *aistudio.AccountLease, err error) error {
 	if aistudio.DefinitiveAuthenticationFailure(err) {
 		if stateErr := lease.ConfirmAuthenticationFailure(requestCtx, err); stateErr != nil {
@@ -2966,14 +2998,37 @@ func (service *trackedService) settleStreamError(requestCtx context.Context, req
 			return errors.Join(err, stateErr)
 		}
 	}
+	if cooldown, quotaFailure := aistudio.QuotaCooldownForError(err, time.Now()); quotaFailure {
+		service.pool.RecordSmartFailure(lease.Account().ID, true)
+		if _, stateErr := service.markQuotaCooldown(requestID, modelID, lease, cooldown); stateErr != nil {
+			return errors.Join(err, stateErr)
+		}
+	}
 	var until time.Time
 	if rejection, rejected := aistudio.AccountRejectionCooldown(err); rejected {
+		service.pool.RecordSmartRejection(lease.Account().ID)
 		var stateErr error
 		if until, stateErr = service.markQuotaCooldown(requestID, modelID, lease, rejection); stateErr != nil {
 			return errors.Join(err, stateErr)
 		}
 	}
 	return accountsUnavailable(err, until)
+}
+
+// testAccountChat 使用真实对话请求对单个账户探活（跳过当前冷却与自动冻结）
+func (service *trackedService) testAccountChat(ctx context.Context, accountID string, modelID string) (aistudio.AccountChatTestResult, error) {
+	if service.state.Load() != serviceRunning {
+		return aistudio.AccountChatTestResult{}, service.stoppedError()
+	}
+	pooled, ok := service.service.(*aistudio.PooledService)
+	if !ok {
+		return aistudio.AccountChatTestResult{}, fmt.Errorf("当前服务实例不支持账户测试")
+	}
+	testCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+	stopLifecycle := context.AfterFunc(service.lifecycle, cancel)
+	defer stopLifecycle()
+	return pooled.TestAccountChat(testCtx, accountID, modelID)
 }
 
 // trailingFinishReason 返回函数调用之后上游结束生成的内容策略原因，其他错误返回空字符串

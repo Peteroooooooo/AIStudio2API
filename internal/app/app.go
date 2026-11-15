@@ -152,6 +152,10 @@ func runService(ctx context.Context, cancel func(), cfg config.Config, options c
 	if err := manager.seedFirstEvents(ctx); err != nil {
 		logService("WARN", "读取近期首事件样本失败", "error", err)
 	}
+	if err := manager.seedSmartUsage(ctx); err != nil {
+		logService("WARN", "读取当前周期账户用量失败", "error", err)
+	}
+	go manager.watchQuotaRecovery(ctx)
 	prompts, err := promptdb.Open(filepath.Join("runtime", "prompts.db"))
 	if err != nil {
 		return false, errors.Join(fmt.Errorf("打开对话库: %w", err), manager.Close(), ledger.Close())

@@ -199,6 +199,14 @@ export const messages: Record<TranslationKey, string> = {
   'accounts.draining': 'Wird deaktiviert · Abschluss',
   'accounts.syncing': 'Wird aktiviert · Modelle synchronisieren',
   'accounts.refreshFailed': 'Fehlgeschlagen',
+  'accounts.test': 'Chat-Test',
+  'accounts.testing': 'Teste…',
+  'accounts.testFailed': 'Test fehlgeschlagen',
+  'accounts.testPassed': '{name} Test erfolgreich ({model}, {latency}ms): {reply}',
+  'accounts.testPassedUnfrozen':
+    '{name} Test erfolgreich & entsperrt ({model}, {latency}ms): {reply}',
+  'accounts.testFailedNotice': '{name} Test fehlgeschlagen: {error}',
+  'accounts.freezeUntil': 'Gesperrt bis {time}',
   'accounts.saved': 'Konto gespeichert',
   'accounts.remoteAdd': 'Remote hinzufügen',
   'accounts.remoteHttps':
@@ -448,8 +456,18 @@ export const messages: Record<TranslationKey, string> = {
   'settings.accountOrderUp': '{account} nach oben',
   'settings.accountOrderDown': '{account} nach unten',
   'settings.routingFillFirst': 'Gleiches Konto bevorzugen',
+  'settings.routingSmart': 'Intelligent (Smart)',
   'settings.routingHelp':
-    'Reihum wechselt die Konten. „Gleiches Konto bevorzugen“ bleibt bei einem Konto, bis es ausgelastet oder nicht verfügbar ist.',
+    'Reihum wechselt, „Gleiches Konto bevorzugen“ bleibt bis zur Auslastung, und „Intelligent“ optimiert nach freien Workern, 60s-RPM-Schutz, Session-Cache-Affinität, Tarif und Tagesverbrauch.',
+  'settings.smartSoftRPM': 'Smart-Routing Soft-RPM',
+  'settings.smartSoftRPMHelp':
+    'Priorisiert ein Konto herunter, sobald es innerhalb von 60 s diesen Schwellenwert erreicht (0 = aus)',
+  'settings.smartHardRPM': 'Smart-Routing Hard-RPM',
+  'settings.smartHardRPMHelp':
+    'Meidet ein Konto strikt ab diesem 60-s-Limit, außer alle Konten sind ausgelastet (0 = aus)',
+  'settings.quotaAutoFreeze': 'Strikte Kontingentsperre & Auto-Erholung',
+  'settings.quotaAutoFreezeHelp':
+    'Friert Konten bei Daily limit oder Plan limit strikt bis zum Reset ein (nur per manuellem Chat-Test umgehbar) und erholt sie automatisch beim Reset',
   'settings.waaBackend': 'WAA-Backend',
   'settings.waaBackendCamoufox': 'Camoufox',
   'settings.waaBackendSpiderMonkey': 'SpiderMonkey',
@@ -1968,6 +1986,7 @@ export const messages: Record<TranslationKey, string> = {
   'usage.range.90d': 'Letzte 90 Tage',
   'usage.range.today': 'Heute',
   'usage.range.yesterday': 'Gestern',
+  'usage.range.quotaCycle': 'Kontingentzyklus (PT 00:00)',
   'usage.range.week': 'Diese Woche',
   'usage.range.month': 'Dieser Monat',
   'usage.range.lastMonth': 'Letzter Monat',

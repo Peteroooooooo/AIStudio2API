@@ -80,10 +80,18 @@ func finishedRequestLog(entry api.AccessLog) (*api.RequestLog, string, string) {
 	return data, level, message
 }
 
-// RecordAccessLog 保存请求结果日志
+// RecordAccessLog 保存请求结果日志并更新智能调度账户成功统计
 func (admin *runtimeAdmin) RecordAccessLog(entry api.AccessLog) {
 	data, level, message := finishedRequestLog(entry)
 	admin.recordRequestLog(entry.Account, level, "request.finished", message, data)
+	if admin.pool != nil && entry.Method == http.MethodPost && entry.Authorized &&
+		entry.Account != "" && entry.Status > 0 && entry.Status < http.StatusBadRequest && data.Error == "" {
+		var tokens int64
+		if data.Usage != nil {
+			tokens = data.Usage.TotalTokens
+		}
+		admin.pool.RecordSmartSuccessByLabel(entry.Account, tokens)
+	}
 }
 
 // requestRow 将 POST 请求结果投影为用量账本记录，函数调用之后上游结束生成的错误写入记录的错误详情

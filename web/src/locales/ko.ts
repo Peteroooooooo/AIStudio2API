@@ -197,6 +197,13 @@ export const messages: Record<TranslationKey, string> = {
   'accounts.draining': '중지 중 · 마무리하는 중',
   'accounts.syncing': '사용 설정 중 · 모델 동기화',
   'accounts.refreshFailed': '새로고침 실패',
+  'accounts.test': '채팅 테스트',
+  'accounts.testing': '테스트 중…',
+  'accounts.testFailed': '테스트 실패',
+  'accounts.testPassed': '{name} 테스트 성공 ({model}, {latency}ms): {reply}',
+  'accounts.testPassedUnfrozen': '{name} 테스트 성공 및 해제됨 ({model}, {latency}ms): {reply}',
+  'accounts.testFailedNotice': '{name} 테스트 실패: {error}',
+  'accounts.freezeUntil': '{time}까지 동결',
   'accounts.saved': '계정을 저장했습니다',
   'accounts.remoteAdd': '원격으로 추가',
   'accounts.remoteHttps':
@@ -446,8 +453,18 @@ export const messages: Record<TranslationKey, string> = {
   'settings.accountOrderUp': '{account} 위로 이동',
   'settings.accountOrderDown': '{account} 아래로 이동',
   'settings.routingFillFirst': '같은 계정 우선',
+  'settings.routingSmart': '스마트 (Smart)',
   'settings.routingHelp':
-    '라운드 로빈은 계정을 차례로 쓰고, 같은 계정 우선은 한도에 닿거나 쓸 수 없을 때까지 한 계정을 씁니다',
+    '라운드 로빈은 차례로, 같은 계정 우선은 가득 찰 때까지 유지하며, 스마트는 유휴 워커 우선·60초 RPM 제한·세션 캐시 친화성·등급·일일 사용량으로 균형 분배합니다',
+  'settings.smartSoftRPM': '스마트 라우팅 소프트 RPM',
+  'settings.smartSoftRPMHelp':
+    '60초 요청 수가 이 임계치에 도달한 계정의 우선순위를 낮춥니다 (0은 제한 없음)',
+  'settings.smartHardRPM': '스마트 라우팅 하드 RPM',
+  'settings.smartHardRPMHelp':
+    '60초 요청 수가 이 상한에 도달한 계정을 최대한 회피합니다 (0은 제한 없음)',
+  'settings.quotaAutoFreeze': '할당량 엄격 동결 및 자동 복구',
+  'settings.quotaAutoFreezeHelp':
+    'Daily limit / Plan limit 도달 시 초기화 시각까지 엄격히 동결하며(수동 채팅 테스트로만 우회/해제 가능) 초기화 시 자동 복구됩니다',
   'settings.waaBackend': 'WAA 백엔드',
   'settings.waaBackendCamoufox': 'Camoufox',
   'settings.waaBackendSpiderMonkey': 'SpiderMonkey',
@@ -1905,6 +1922,7 @@ export const messages: Record<TranslationKey, string> = {
   'usage.range.90d': '최근 90일',
   'usage.range.today': '오늘',
   'usage.range.yesterday': '어제',
+  'usage.range.quotaCycle': '할당량 주기 (PT 00:00)',
   'usage.range.week': '이번 주',
   'usage.range.month': '이번 달',
   'usage.range.lastMonth': '지난달',
