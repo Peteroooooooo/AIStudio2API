@@ -1841,6 +1841,7 @@ export const messages = {
   'usage.range.month': '本月',
   'usage.range.lastMonth': '上月',
   'usage.range.custom': '自定义',
+  'usage.rangeQuota': '额度周期',
   'usage.rangeRecent': '最近',
   'usage.rangeCalendar': '日历',
   'usage.rangeCustom': '自定义范围',

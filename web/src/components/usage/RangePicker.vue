@@ -7,6 +7,7 @@ import { useUsageFormat } from './format'
 import {
   calendarPresets,
   localInput,
+  quotaPresets,
   relativePresets,
   retention,
   validRange,
@@ -89,6 +90,26 @@ function applyCustom(): void {
       >
         <div class="grid gap-4 sm:grid-cols-[1fr_1.1fr]">
           <div class="space-y-3">
+            <section>
+              <h4 class="mb-1.5 text-xs font-medium tracking-wide text-gray-500 uppercase">
+                {{ t('usage.rangeQuota') }}
+              </h4>
+              <button
+                v-for="item in quotaPresets"
+                :key="item"
+                type="button"
+                :aria-pressed="range === item"
+                class="w-full rounded border px-2.5 py-1.5 text-left text-xs font-medium transition-colors"
+                :class="
+                  range === item
+                    ? 'border-blue-500/40 bg-blue-600/20 text-blue-300'
+                    : 'border-line bg-canvas/60 text-gray-200 hover:bg-raised hover:text-white'
+                "
+                @click="choose(item)"
+              >
+                {{ t(`usage.range.${item}`) }}
+              </button>
+            </section>
             <section
               v-for="group in [
                 { label: 'usage.rangeRecent' as const, items: relativePresets },

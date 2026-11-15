@@ -1848,6 +1848,7 @@ export const messages: Record<TranslationKey, string> = {
   'usage.range.month': '本月',
   'usage.range.lastMonth': '上個月',
   'usage.range.custom': '自訂',
+  'usage.rangeQuota': '額度週期',
   'usage.rangeRecent': '最近',
   'usage.rangeCalendar': '日曆',
   'usage.rangeCustom': '自訂範圍',

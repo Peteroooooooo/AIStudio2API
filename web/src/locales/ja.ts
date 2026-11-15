@@ -1945,6 +1945,7 @@ export const messages: Record<TranslationKey, string> = {
   'usage.range.month': '今月',
   'usage.range.lastMonth': '先月',
   'usage.range.custom': 'カスタム',
+  'usage.rangeQuota': 'クォータ',
   'usage.rangeRecent': '直近',
   'usage.rangeCalendar': 'カレンダー',
   'usage.rangeCustom': 'カスタム期間',

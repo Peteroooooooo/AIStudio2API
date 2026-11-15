@@ -1,17 +1,12 @@
 import { onActivated, onUnmounted, reactive, watch } from 'vue'
 import type { UsageDimension, UsageFilters, UsageStats } from '@/types'
 
-// relativePresets 与 calendarPresets 是相对时间与日历两类快捷范围
+// quotaPresets、relativePresets 与 calendarPresets 是额度周期、相对时间与日历三类快捷范围
+export const quotaPresets = ['quotaCycle'] as const
 export const relativePresets = ['1h', '6h', '24h', '7d', '30d', '90d'] as const
-export const calendarPresets = [
-  'today',
-  'yesterday',
-  'quotaCycle',
-  'week',
-  'month',
-  'lastMonth',
-] as const
+export const calendarPresets = ['today', 'yesterday', 'week', 'month', 'lastMonth'] as const
 export type RangePreset =
+  | (typeof quotaPresets)[number]
   | (typeof relativePresets)[number]
   | (typeof calendarPresets)[number]
   | 'custom'
@@ -43,7 +38,7 @@ interface UsageViewState {
 }
 
 const defaults: UsageViewState = {
-  range: '24h',
+  range: 'quotaCycle',
   from: '',
   to: '',
   stack: 'model',
@@ -59,7 +54,12 @@ let rememberedState: UsageViewState | undefined
 function readState(): UsageViewState {
   const query = new URLSearchParams(window.location.search)
   const range = query.get('range') as RangePreset | null
-  const presets: readonly string[] = [...relativePresets, ...calendarPresets, 'custom']
+  const presets: readonly string[] = [
+    ...quotaPresets,
+    ...relativePresets,
+    ...calendarPresets,
+    'custom',
+  ]
   const stack = query.get('stack') as UsageDimension | null
   const filters: UsageFilters = {}
   for (const dimension of dimensions) {

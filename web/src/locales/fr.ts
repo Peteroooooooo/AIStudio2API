@@ -1996,6 +1996,7 @@ export const messages: Record<TranslationKey, string> = {
   'usage.range.month': 'Ce mois-ci',
   'usage.range.lastMonth': 'Le mois dernier',
   'usage.range.custom': 'Personnalisée',
+  'usage.rangeQuota': 'Cycle de quota',
   'usage.rangeRecent': 'Récent',
   'usage.rangeCalendar': 'Calendrier',
   'usage.rangeCustom': 'Période personnalisée',

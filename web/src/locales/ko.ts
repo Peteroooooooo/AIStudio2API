@@ -1927,6 +1927,7 @@ export const messages: Record<TranslationKey, string> = {
   'usage.range.month': '이번 달',
   'usage.range.lastMonth': '지난달',
   'usage.range.custom': '직접 지정',
+  'usage.rangeQuota': '할당량 주기',
   'usage.rangeRecent': '최근',
   'usage.rangeCalendar': '달력',
   'usage.rangeCustom': '기간 직접 지정',

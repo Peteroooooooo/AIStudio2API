@@ -1957,6 +1957,7 @@ export const messages: Record<TranslationKey, string> = {
   'usage.range.month': 'This month',
   'usage.range.lastMonth': 'Last month',
   'usage.range.custom': 'Custom',
+  'usage.rangeQuota': 'Quota cycle',
   'usage.rangeRecent': 'Recent',
   'usage.rangeCalendar': 'Calendar',
   'usage.rangeCustom': 'Custom range',
