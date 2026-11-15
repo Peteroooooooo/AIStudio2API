@@ -5,6 +5,7 @@ import {
   DropdownMenuItem,
   DropdownMenuPortal,
   DropdownMenuRoot,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from 'reka-ui'
 import { useRouter } from 'vue-router'
@@ -12,6 +13,7 @@ import { useConsole } from '@/console'
 import { useI18n } from '@/i18n'
 import UiDialog from '@/playground/ui/UiDialog.vue'
 import UiIcon from '@/playground/ui/UiIcon.vue'
+import UserSettingsDialog from './shell/UserSettingsDialog.vue'
 import SavePromptDialog from './SavePromptDialog.vue'
 import TokenCountTooltip from './TokenCountTooltip.vue'
 import { isOmniModel } from './catalog'
@@ -31,6 +33,7 @@ const handset = useMediaQuery('(max-width: 768px)')
 
 const editing = ref(false)
 const confirmDelete = ref(false)
+const userSettingsOpen = ref(false)
 
 // hasPrompt 表示对话已有内容或附件，标题可编辑
 const hasPrompt = computed(
@@ -199,6 +202,11 @@ async function removePrompt(): Promise<void> {
               <span class="ms-menu-item-text">{{ t('pg.rawMode') }}</span>
               <UiIcon v-if="session.rawMode" name="check" :size="18" />
             </DropdownMenuItem>
+            <DropdownMenuSeparator class="ms-menu-divider" />
+            <DropdownMenuItem class="ms-menu-item" @select="userSettingsOpen = true">
+              <UiIcon name="settings" :size="18" />
+              <span class="ms-menu-item-text">{{ t('pg.userSettings') }}</span>
+            </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenuPortal>
       </DropdownMenuRoot>
@@ -238,6 +246,7 @@ async function removePrompt(): Promise<void> {
         </button>
       </template>
     </UiDialog>
+    <UserSettingsDialog v-model:open="userSettingsOpen" />
   </header>
 </template>
 

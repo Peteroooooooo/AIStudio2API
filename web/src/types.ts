@@ -9,6 +9,7 @@ export type TabID =
   | 'usage'
   | 'settings'
   | 'playground'
+  | 'history'
   | 'version'
 
 export type AccountState =

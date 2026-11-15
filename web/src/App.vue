@@ -49,6 +49,13 @@ const AccountsPanel = lazyPanel(() => import('@/components/AccountsPanel.vue'))
 const ModelsTable = lazyPanel(() => import('@/components/ModelsTable.vue'))
 const RequestsPanel = lazyPanel(() => import('@/components/RequestsPanel.vue'))
 const SettingsPanel = lazyPanel(() => import('@/components/SettingsPanel.vue'))
+const StudioLayout = defineAsyncComponent(() =>
+  import('@/playground/StudioLayout.vue').then(afterTask),
+)
+function preloadStudio(): void {
+  void import('@/playground/StudioLayout.vue')
+  void import('@/playground/PlaygroundPage.vue')
+}
 const validTabs: TabID[] = [
   'logs',
   'accounts',
@@ -62,6 +69,11 @@ const validTabs: TabID[] = [
 const { tab: currentTab, select: selectTab } = useTabParam(validTabs, 'logs')
 const router = useRouter()
 const route = useRoute()
+const isStudio = computed(() => Boolean(route.meta.studio))
+const activeNav = computed<TabID>(() => {
+  if (isStudio.value) return route.name === 'library' ? 'history' : 'playground'
+  return currentTab.value
+})
 // currentTab 在从试用页返回时同步目标管理页面
 watch(
   () => route.fullPath,
@@ -73,10 +85,18 @@ watch(
   },
 )
 
-// openTab 切换页面，API 试用进入独立的试用页
+// openTab 切换页面；在管理台与试用页之间共用同一套外框与过渡
 function openTab(tab: TabID): void {
-  if (tab === 'playground') void router.push('/prompts/new_chat')
-  else selectTab(tab)
+  if (tab === 'playground') {
+    void router.push('/prompts/new_chat')
+  } else if (tab === 'history') {
+    void router.push('/library')
+  } else if (isStudio.value) {
+    currentTab.value = tab
+    void router.push(tab === 'logs' ? '/' : { path: '/', query: { tab } })
+  } else {
+    selectTab(tab)
+  }
 }
 const navigationBar = ref<HTMLElement | null>(null)
 
@@ -93,7 +113,7 @@ function revealCurrentTab(): void {
   if (itemRect.left < barRect.left) bar.scrollLeft -= barRect.left - itemRect.left
   else if (itemRect.right > barRect.right) bar.scrollLeft += itemRect.right - barRect.right
 }
-watch(currentTab, revealCurrentTab, { flush: 'post' })
+watch(activeNav, revealCurrentTab, { flush: 'post' })
 
 // defaultSidebarWidth 是宽屏侧栏的默认宽度，双击拖动条恢复
 const defaultSidebarWidth = 256
@@ -102,10 +122,14 @@ const maxSidebarWidth = 360
 const sidebarWidth = ref(
   readPreference('app.sidebarWidth', defaultSidebarWidth, (value) => typeof value === 'number'),
 )
+const sidebarCollapsed = ref(
+  readPreference('app.sidebarCollapsed', false, (value) => typeof value === 'boolean'),
+)
 const resizingSidebar = ref(false)
 let sidebarResizeStartX = 0
 let sidebarResizeStartWidth = 0
 watch(sidebarWidth, (value) => writePreference('app.sidebarWidth', value))
+watch(sidebarCollapsed, (value) => writePreference('app.sidebarCollapsed', value))
 
 function clampSidebarWidth(value: number): number {
   return Math.round(Math.min(maxSidebarWidth, Math.max(minSidebarWidth, value)))
@@ -204,12 +228,14 @@ const navigation: { id: TabID; label: TranslationKey; icon: IconName }[] = [
   { id: 'usage', label: 'nav.usage', icon: 'usage' },
   { id: 'settings', label: 'nav.settings', icon: 'settings' },
   { id: 'playground', label: 'nav.playground', icon: 'playground' },
+  { id: 'history', label: 'pg.history', icon: 'history' },
   { id: 'version', label: 'nav.version', icon: 'version' },
 ]
 
 // camoufoxInTask 表示账户页的浏览器登录任务行正在显示 Camoufox 下载进度，此时不再显示顶部横幅
 const camoufoxInTask = computed(
   () =>
+    !isStudio.value &&
     currentTab.value === 'accounts' &&
     accountTasks.value.some((task) => waitsForCamoufox(task, status.value?.camoufox)),
 )
@@ -235,29 +261,42 @@ async function logout(): Promise<void> {
   emit('logout')
 }
 
-onMounted(revealCurrentTab)
+onMounted(() => {
+  revealCurrentTab()
+  if (typeof window.requestIdleCallback === 'function') window.requestIdleCallback(preloadStudio)
+  else globalThis.setTimeout(preloadStudio, 400)
+})
 </script>
 
 <template>
   <div class="flex h-full w-full flex-col md:flex-row">
     <aside
       class="app-sidebar relative grid w-full min-w-0 shrink-0 border-b border-line bg-panel md:border-r md:border-b-0"
+      :class="{ 'is-collapsed': sidebarCollapsed, 'is-resizing': resizingSidebar }"
       :style="{ '--sidebar-width': `${sidebarWidth}px` }"
     >
       <div
-        class="flex h-14 min-w-0 items-center gap-2.5 border-b border-line px-4 [grid-area:brand]"
+        class="flex h-14 min-w-0 items-center gap-1.5 border-b border-line [grid-area:brand]"
+        :class="sidebarCollapsed ? 'px-4 md:justify-center md:px-0' : 'px-3'"
       >
-        <span v-tooltip="`${t('app.status')}: ${serviceStateLabel}`" class="relative shrink-0">
+        <span
+          v-tooltip="`${t('app.status')}: ${serviceStateLabel}`"
+          class="relative shrink-0"
+          :class="{ 'md:hidden': sidebarCollapsed }"
+        >
           <img src="/favicon.svg" alt="" class="h-6 w-6" />
           <span
             class="absolute -right-0.5 -bottom-0.5 h-2.5 w-2.5 rounded-full ring-2 ring-panel"
             :class="statusColor"
           ></span>
         </span>
-        <h1 class="relative top-px min-w-0 flex-1 truncate text-base font-bold text-white">
+        <h1
+          class="relative top-px min-w-0 flex-1 truncate text-base font-bold text-white"
+          :class="{ 'md:hidden': sidebarCollapsed }"
+        >
           AIStudio2API
         </h1>
-        <div class="flex shrink-0 items-center gap-1">
+        <div class="flex shrink-0 items-center gap-1" :class="{ 'md:hidden': sidebarCollapsed }">
           <ThemeToggle />
           <DropdownMenuRoot :modal="false">
             <DropdownMenuTrigger
@@ -286,15 +325,26 @@ onMounted(revealCurrentTab)
             </DropdownMenuPortal>
           </DropdownMenuRoot>
         </div>
+        <button
+          v-tooltip="sidebarCollapsed ? t('nav.expand') : t('nav.collapse')"
+          type="button"
+          :aria-label="sidebarCollapsed ? t('nav.expand') : t('nav.collapse')"
+          class="hidden h-6 w-6 shrink-0 items-center justify-center rounded border border-gray-700 text-gray-500 transition hover:text-white md:flex"
+          @click="sidebarCollapsed = !sidebarCollapsed"
+        >
+          <UiIcon :name="sidebarCollapsed ? 'sidebarExpand' : 'sidebarCollapse'" :size="13" />
+        </button>
       </div>
 
       <div
         v-if="adminUsername"
         class="flex min-w-0 items-center gap-1 border-b border-line pr-4 [grid-area:controls] md:border-t md:border-b-0 md:px-3 md:py-2"
+        :class="{ 'md:justify-center md:px-0': sidebarCollapsed }"
       >
         <span
           v-tooltip.overflow="adminUsername"
-          class="hidden min-w-0 flex-1 truncate text-xs text-gray-400 md:block"
+          class="hidden min-w-0 flex-1 truncate text-xs text-gray-400"
+          :class="{ 'md:block': !sidebarCollapsed }"
           >{{ adminUsername }}</span
         >
         <button
@@ -315,32 +365,48 @@ onMounted(revealCurrentTab)
         <button
           v-for="item in navigation"
           :key="item.id"
+          v-tooltip.right="sidebarCollapsed ? t(item.label) : undefined"
           :class="[
-            'flex w-auto shrink-0 items-center gap-2 rounded-md px-3 py-2 text-left whitespace-nowrap transition md:w-full',
-            currentTab === item.id
+            'relative flex w-auto shrink-0 items-center gap-2 rounded-md py-2 text-left whitespace-nowrap transition md:w-full',
+            sidebarCollapsed ? 'px-3 md:justify-center md:px-0' : 'px-3',
+            activeNav === item.id
               ? 'bg-blue-600 text-white'
               : 'text-gray-400 hover:bg-raised hover:text-white',
           ]"
           type="button"
-          :aria-current="currentTab === item.id ? 'page' : undefined"
+          :aria-label="t(item.label)"
+          :aria-current="activeNav === item.id ? 'page' : undefined"
+          @pointerenter="(item.id === 'playground' || item.id === 'history') && preloadStudio()"
           @click="openTab(item.id)"
         >
           <UiIcon :name="item.icon" :size="16" class="shrink-0" />
-          <span v-tooltip.overflow="t(item.label)" class="min-w-0 truncate md:whitespace-normal">{{
-            t(item.label)
-          }}</span>
+          <span
+            v-tooltip.overflow="sidebarCollapsed ? undefined : t(item.label)"
+            class="min-w-0 truncate md:whitespace-normal"
+            :class="{ 'md:hidden': sidebarCollapsed }"
+            >{{ t(item.label) }}</span
+          >
           <span
             v-if="item.id === 'version' && update?.available"
-            class="size-2 shrink-0 rounded-full bg-amber-400 md:ml-auto"
+            class="size-2 shrink-0 rounded-full bg-amber-400"
+            :class="sidebarCollapsed ? 'md:absolute md:top-1.5 md:right-2' : 'md:ml-auto'"
             aria-hidden="true"
             :title="t('version.available').replace('{version}', update.latest!)"
           />
         </button>
       </nav>
 
-      <div class="min-w-0 overflow-hidden border-t border-line p-2 [grid-area:status] md:p-4">
-        <div class="mb-2 hidden text-xs text-gray-500 md:block">{{ t('app.status') }}</div>
-        <div class="flex items-center justify-between gap-2 md:mb-4">
+      <div
+        class="min-w-0 overflow-hidden border-t border-line p-2 [grid-area:status]"
+        :class="sidebarCollapsed ? 'md:flex md:justify-center md:p-2' : 'md:p-4'"
+      >
+        <div class="mb-2 hidden text-xs text-gray-500" :class="{ 'md:block': !sidebarCollapsed }">
+          {{ t('app.status') }}
+        </div>
+        <div
+          class="flex items-center justify-between gap-2 md:mb-4"
+          :class="{ 'md:hidden': sidebarCollapsed }"
+        >
           <div class="flex min-w-0 items-center gap-2 md:contents">
             <span
               class="grid shrink-0 font-mono font-bold whitespace-nowrap uppercase"
@@ -386,27 +452,38 @@ onMounted(revealCurrentTab)
         </div>
         <button
           v-if="serviceState === 'stopped' || serviceState === 'unavailable'"
-          :class="{ invisible: serviceState === 'unavailable' }"
-          class="hidden w-full items-center justify-center gap-2 rounded bg-green-600 py-2 font-bold text-white shadow transition hover:bg-green-500 disabled:opacity-50 md:flex"
+          v-tooltip.right="
+            sidebarCollapsed ? `${serviceStateLabel} · ${t('app.start')}` : undefined
+          "
+          :class="[
+            { invisible: serviceState === 'unavailable' },
+            sidebarCollapsed ? 'md:flex md:w-9 md:h-9 md:p-0' : 'md:flex w-full py-2',
+          ]"
+          class="hidden items-center justify-center gap-2 rounded bg-green-600 font-bold text-white shadow transition hover:bg-green-500 disabled:opacity-50"
           type="button"
+          :aria-label="t('app.start')"
           :disabled="startPending || stopPending"
           @click="startService"
         >
           <UiIcon :name="startPending ? 'spinner' : 'play'" :size="16" />
-          {{ t('app.start') }}
+          <span :class="{ 'md:hidden': sidebarCollapsed }">{{ t('app.start') }}</span>
         </button>
         <button
           v-else-if="serviceState === 'launching' || serviceState === 'running'"
-          class="hidden w-full items-center justify-center gap-2 rounded bg-red-600 py-2 font-bold text-white shadow transition hover:bg-red-500 disabled:opacity-50 md:flex"
+          v-tooltip.right="sidebarCollapsed ? `${serviceStateLabel} · ${t('app.stop')}` : undefined"
+          :class="sidebarCollapsed ? 'md:flex md:w-9 md:h-9 md:p-0' : 'md:flex w-full py-2'"
+          class="hidden items-center justify-center gap-2 rounded bg-red-600 font-bold text-white shadow transition hover:bg-red-500 disabled:opacity-50"
           type="button"
+          :aria-label="t('app.stop')"
           :disabled="stopPending"
           @click="stopService"
         >
           <UiIcon :name="stopPending ? 'spinner' : 'stop'" :size="16" />
-          {{ t('app.stop') }}
+          <span :class="{ 'md:hidden': sidebarCollapsed }">{{ t('app.stop') }}</span>
         </button>
       </div>
       <div
+        v-if="!sidebarCollapsed"
         class="sidebar-resizer"
         :class="{ 'is-resizing': resizingSidebar }"
         role="separator"
@@ -452,70 +529,73 @@ onMounted(revealCurrentTab)
           {{ item.value ? `${item.key}=${item.value}` : item.key }} · {{ logText(item.reason) }}
         </p>
       </div>
-      <KeepAlive
-        include="LogsPanel,AccountsPanel,AccessPanel,ModelsTable,RequestsPanel,SettingsPanel,VersionPanel,UsagePanel"
-      >
-        <LogsPanel v-if="currentTab === 'logs'" :logs="logs" @clear="clearLogs" />
-        <AccountsPanel
-          v-else-if="currentTab === 'accounts'"
-          :accounts="visibleAccounts"
-          :tasks="accountTasks"
-          :loading="loading.accounts"
-          :error="errors.accounts"
-          :chrome-import="status?.chrome_import ?? false"
-          :camoufox="status?.camoufox"
-          :geoip="status?.geoip"
-          @refresh="loadAccountData"
-          @updated="updateAccount"
-          @notice="showNotice"
-          @delete="deleteAccounts"
-        />
-        <AccessPanel
-          v-else-if="currentTab === 'access'"
-          :config="config"
-          :models="models"
-          @settings="openTab('settings')"
-        />
-        <ModelsTable
-          v-else-if="currentTab === 'models'"
-          :models="models"
-          :loading="loading.models"
-          :error="errors.models"
-          :config="config"
-          :accounts="accounts"
-          @saved="config = $event"
-          @notice="showNotice"
-        />
-        <RequestsPanel
-          v-else-if="currentTab === 'requests'"
-          :accounts="accounts"
-          :cooldowns="cooldowns"
-          :requests="requests"
-          :loading="loading.requests || loading.cooldowns"
-          :cooldown-error="errors.cooldowns"
-          :request-error="errors.requests"
-          @refresh="loadRequestData"
-          @notice="showNotice"
-        />
-        <UsagePanel v-else-if="currentTab === 'usage'" :models="models" />
-        <SettingsPanel
-          v-else-if="currentTab === 'settings'"
-          :config="config"
-          :accounts="accounts"
-          :models="models"
-          :loading="loading.config || loading.accounts"
-          :error="errors.config"
-          @saved="config = $event"
-          @notice="showNotice"
-        />
-        <VersionPanel
-          v-else-if="currentTab === 'version'"
-          :status="update"
-          :active-requests="status?.active_requests ?? 0"
-          @status="update = $event"
-          @restarting="waitForRestart"
-        />
-      </KeepAlive>
+      <Transition name="panel-fade" mode="out-in">
+        <KeepAlive
+          include="LogsPanel,AccountsPanel,AccessPanel,ModelsTable,RequestsPanel,SettingsPanel,VersionPanel,UsagePanel,StudioLayout"
+        >
+          <StudioLayout v-if="isStudio" />
+          <LogsPanel v-else-if="currentTab === 'logs'" :logs="logs" @clear="clearLogs" />
+          <AccountsPanel
+            v-else-if="currentTab === 'accounts'"
+            :accounts="visibleAccounts"
+            :tasks="accountTasks"
+            :loading="loading.accounts"
+            :error="errors.accounts"
+            :chrome-import="status?.chrome_import ?? false"
+            :camoufox="status?.camoufox"
+            :geoip="status?.geoip"
+            @refresh="loadAccountData"
+            @updated="updateAccount"
+            @notice="showNotice"
+            @delete="deleteAccounts"
+          />
+          <AccessPanel
+            v-else-if="currentTab === 'access'"
+            :config="config"
+            :models="models"
+            @settings="openTab('settings')"
+          />
+          <ModelsTable
+            v-else-if="currentTab === 'models'"
+            :models="models"
+            :loading="loading.models"
+            :error="errors.models"
+            :config="config"
+            :accounts="accounts"
+            @saved="config = $event"
+            @notice="showNotice"
+          />
+          <RequestsPanel
+            v-else-if="currentTab === 'requests'"
+            :accounts="accounts"
+            :cooldowns="cooldowns"
+            :requests="requests"
+            :loading="loading.requests || loading.cooldowns"
+            :cooldown-error="errors.cooldowns"
+            :request-error="errors.requests"
+            @refresh="loadRequestData"
+            @notice="showNotice"
+          />
+          <UsagePanel v-else-if="currentTab === 'usage'" :models="models" />
+          <SettingsPanel
+            v-else-if="currentTab === 'settings'"
+            :config="config"
+            :accounts="accounts"
+            :models="models"
+            :loading="loading.config || loading.accounts"
+            :error="errors.config"
+            @saved="config = $event"
+            @notice="showNotice"
+          />
+          <VersionPanel
+            v-else-if="currentTab === 'version'"
+            :status="update"
+            :active-requests="status?.active_requests ?? 0"
+            @status="update = $event"
+            @restarting="waitForRestart"
+          />
+        </KeepAlive>
+      </Transition>
     </main>
 
     <div
@@ -585,6 +665,7 @@ onMounted(revealCurrentTab)
 @media (width >= 48rem) {
   .app-sidebar {
     width: var(--sidebar-width);
+    transition: width 180ms cubic-bezier(0.2, 0, 0, 1);
     grid-template-rows: auto minmax(0, 1fr) auto auto;
     grid-template-columns: minmax(0, 1fr);
     grid-template-areas:
@@ -593,6 +674,27 @@ onMounted(revealCurrentTab)
       'controls'
       'status';
   }
+
+  .app-sidebar.is-resizing {
+    transition: none;
+  }
+
+  .app-sidebar.is-collapsed {
+    width: 3.5rem;
+  }
+}
+
+.panel-fade-enter-active {
+  transition: opacity 140ms ease-out;
+}
+
+.panel-fade-leave-active {
+  transition: opacity 80ms ease-in;
+}
+
+.panel-fade-enter-from,
+.panel-fade-leave-to {
+  opacity: 0;
 }
 
 .sidebar-resizer {

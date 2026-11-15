@@ -72,7 +72,9 @@ export function showTooltip(target: HTMLElement): void {
     pending = null
     const text = target.dataset.tooltip
     if (!text) return
-    const studio = document.documentElement.classList.contains('studio')
+    const studio =
+      target.closest('.app-sidebar') === null &&
+      document.documentElement.classList.contains('studio')
     const element = tooltipElement()
     element.className = studio ? 'ms-tooltip visible' : 'ui-tooltip visible'
     element.textContent = text
