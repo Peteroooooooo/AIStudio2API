@@ -446,6 +446,7 @@ export interface ServiceConfig {
   smart_hard_rpm: number
   quota_auto_freeze: boolean
   account_order: string
+  account_test_models: string
   upstream_channels: UpstreamChannel[]
   model_mapping: string
   model_channels: string

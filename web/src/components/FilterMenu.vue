@@ -17,6 +17,8 @@ const props = defineProps<{
   disabled?: boolean
   // field 表示触发器使用表单下拉框的样式
   field?: boolean
+  // large 表示弹出面板更宽更高、条目更大，适合选项很多的列表
+  large?: boolean
 }>()
 const emit = defineEmits<{ change: [values: string[]] }>()
 
@@ -67,7 +69,8 @@ function toggle(value: string, checked: boolean): void {
         align="start"
         :side-offset="6"
         :collision-padding="12"
-        class="ui-popover z-[80] w-80 max-w-[var(--reka-popover-content-available-width)] min-w-[var(--reka-popover-trigger-width)] rounded-lg border border-line bg-panel p-2 shadow-xl shadow-black/40"
+        class="ui-popover z-[80] max-w-[var(--reka-popover-content-available-width)] min-w-[var(--reka-popover-trigger-width)] rounded-lg border border-line bg-panel p-2 shadow-xl shadow-black/40"
+        :class="large ? 'w-[28rem]' : 'w-80'"
       >
         <label class="relative mb-2 block">
           <span class="sr-only">{{ searchLabel }}</span>
@@ -80,10 +83,16 @@ function toggle(value: string, checked: boolean): void {
             v-model="query"
             type="search"
             :placeholder="searchLabel"
-            class="w-full rounded-md border border-line bg-canvas py-1.5 pr-2 pl-7 text-xs text-white focus:border-blue-500 focus:outline-none"
+            class="w-full rounded-md border border-line bg-canvas pr-2 pl-7 text-white focus:border-blue-500 focus:outline-none"
+            :class="large ? 'py-2 text-sm' : 'py-1.5 text-xs'"
           />
         </label>
-        <fieldset class="max-h-64 min-w-0 overflow-y-auto">
+        <fieldset
+          class="min-w-0 overflow-y-auto"
+          :class="
+            large ? 'max-h-[min(32rem,var(--reka-popover-content-available-height))]' : 'max-h-64'
+          "
+        >
           <legend class="sr-only">{{ label }}</legend>
           <p v-if="visible.length === 0" class="px-2 py-3 text-center text-xs text-gray-500">
             {{ emptyLabel }}
@@ -92,7 +101,8 @@ function toggle(value: string, checked: boolean): void {
             v-for="(value, index) in visible"
             :key="value"
             :for="`${id}-${index}`"
-            class="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-xs text-gray-300 hover:bg-raised"
+            class="flex cursor-pointer items-center gap-2 rounded px-2 text-gray-300 hover:bg-raised"
+            :class="large ? 'py-2 text-sm' : 'py-1.5 text-xs'"
           >
             <input
               :id="`${id}-${index}`"

@@ -1195,6 +1195,7 @@ func (admin *runtimeAdmin) UpdateRuntimeConfig(_ context.Context, value api.Runt
 		SmartHardRPM:           value.SmartHardRPM,
 		QuotaAutoFreeze:        value.QuotaAutoFreeze,
 		AccountOrder:           strings.TrimSpace(value.AccountOrder),
+		AccountTestModels:      strings.TrimSpace(value.AccountTestModels),
 		MaxAccountSwitches:     value.MaxAccountSwitches,
 		UpstreamChannels:       value.UpstreamChannels,
 		ModelMapping:           strings.TrimSpace(value.ModelMapping),
@@ -1232,6 +1233,7 @@ func (admin *runtimeAdmin) UpdateRuntimeConfig(_ context.Context, value api.Runt
 	admin.config.SmartHardRPM = cfg.SmartHardRPM
 	admin.config.QuotaAutoFreeze = cfg.QuotaAutoFreeze
 	admin.config.AccountOrder = cfg.AccountOrder
+	admin.config.AccountTestModels = cfg.AccountTestModels
 	admin.requests.log("service", "INFO", "服务配置已保存")
 	models, _ := admin.CatalogModels(context.Background())
 	admin.requests.publish(api.AdminEvent{Type: "models", Data: map[string]any{"models": models}})
@@ -1531,6 +1533,7 @@ func runtimeConfigDTO(cfg config.Config) api.RuntimeConfig {
 		SmartHardRPM:           cfg.SmartHardRPM,
 		QuotaAutoFreeze:        cfg.QuotaAutoFreeze,
 		AccountOrder:           cfg.AccountOrder,
+		AccountTestModels:      cfg.AccountTestModels,
 		MaxAccountSwitches:     cfg.MaxAccountSwitches,
 		UpstreamChannels:       cfg.UpstreamChannels,
 		ModelMapping:           cfg.ModelMapping,

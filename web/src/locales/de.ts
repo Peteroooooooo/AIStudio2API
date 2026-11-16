@@ -206,6 +206,7 @@ export const messages: Record<TranslationKey, string> = {
   'accounts.testPassedUnfrozen':
     '{name} Test erfolgreich & entsperrt ({model}, {latency}ms): {reply}',
   'accounts.testFailedNotice': '{name} Test fehlgeschlagen: {error}',
+  'accounts.testModel': 'Testmodell',
   'accounts.freezeUntil': 'Gesperrt bis {time}',
   'accounts.saved': 'Konto gespeichert',
   'accounts.remoteAdd': 'Remote hinzufügen',
@@ -487,6 +488,17 @@ export const messages: Record<TranslationKey, string> = {
   'settings.accountOrderClear': 'Bevorzugte Konten leeren',
   'settings.accountOrderUnset': 'Nicht festgelegt; Konten werden in ID-Reihenfolge verwendet',
   'settings.accountOrderRest': 'Die übrigen {count} Konten folgen in ID-Reihenfolge',
+  'settings.accountTestModels': 'Modelle für Kontotests',
+  'settings.accountTestModelsHelp':
+    'Modelle, die der Chat-Test auf der Kontenseite anbietet, in dieser Reihenfolge im Auswahlmenü; das erste ist der Standard. Ohne Auswahl wählt der Test automatisch ein Modell (zuerst ein abkühlendes)',
+  'settings.accountTestModelsDrag': '{model} zum Umsortieren ziehen',
+  'settings.accountTestModelsUp': '{model} nach oben',
+  'settings.accountTestModelsDown': '{model} nach unten',
+  'settings.accountTestModelsRemove': '{model} entfernen',
+  'settings.accountTestModelsAdd': 'Testmodell hinzufügen',
+  'settings.accountTestModelsUnset': 'Keine Auswahl; der Test wählt automatisch ein Modell',
+  'settings.accountTestModelsDefault':
+    'Testet standardmäßig {model}; auf der Kontenseite umschaltbar',
   'settings.maxAccountSwitches': 'Maximale Kontowechsel',
   'settings.maxAccountSwitchesHelp':
     'Wie oft eine Anfrage nach einem Upstream-Fehler ohne Kontingentbezug wie 403 oder 5xx zu einem anderen Konto wechselt; 0 deaktiviert den Wechsel, Kontingentfehler zählen nicht',

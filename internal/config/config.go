@@ -46,6 +46,7 @@ var configKeys = [...]string{
 	"SMART_HARD_RPM",
 	"QUOTA_AUTO_FREEZE",
 	"ACCOUNT_ORDER",
+	"ACCOUNT_TEST_MODELS",
 	"MAX_ACCOUNT_SWITCHES",
 	"UPSTREAM_CHANNELS",
 	"MODEL_MAPPING",
@@ -160,6 +161,7 @@ type Config struct {
 	SmartHardRPM           int
 	QuotaAutoFreeze        bool
 	AccountOrder           string
+	AccountTestModels      string // 账户页测试下拉框按顺序列出的模型 ID，逗号分隔，第一个为默认测试模型；为空时自动选模型
 	MaxAccountSwitches     int
 	UpstreamChannels       []string
 	ModelMapping           string
@@ -276,6 +278,7 @@ var configSetters = map[string]func(*Config, string) error{
 	"SMART_HARD_RPM":           nonNegativeIntSetter("SMART_HARD_RPM", func(c *Config) *int { return &c.SmartHardRPM }),
 	"QUOTA_AUTO_FREEZE":        boolSetter("QUOTA_AUTO_FREEZE", func(c *Config) *bool { return &c.QuotaAutoFreeze }),
 	"ACCOUNT_ORDER":            textSetter(func(c *Config) *string { return &c.AccountOrder }, strings.TrimSpace),
+	"ACCOUNT_TEST_MODELS":      textSetter(func(c *Config) *string { return &c.AccountTestModels }, strings.TrimSpace),
 	"MODEL_MAPPING":            textSetter(func(c *Config) *string { return &c.ModelMapping }, strings.TrimSpace),
 	"MODEL_CHANNELS":           textSetter(func(c *Config) *string { return &c.ModelChannels }, strings.TrimSpace),
 	"MODEL_ACCOUNTS":           textSetter(func(c *Config) *string { return &c.ModelAccounts }, strings.TrimSpace),
@@ -672,6 +675,7 @@ func (c Config) envValues() map[string]string {
 		"SMART_HARD_RPM":           strconv.Itoa(c.SmartHardRPM),
 		"QUOTA_AUTO_FREEZE":        strconv.FormatBool(c.QuotaAutoFreeze),
 		"ACCOUNT_ORDER":            c.AccountOrder,
+		"ACCOUNT_TEST_MODELS":      c.AccountTestModels,
 		"MAX_ACCOUNT_SWITCHES":     strconv.Itoa(c.MaxAccountSwitches),
 		"UPSTREAM_CHANNELS":        strings.Join(c.UpstreamChannels, ","),
 		"MODEL_MAPPING":            c.ModelMapping,

@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { parseAccountBindings } from '@/accountBindings'
+import { accountTestable, parseTestModels, tierAllows } from '@/accountTest'
 import { api } from '@/api'
 import { maskKey, splitKeys } from '@/apikey'
 import { desktopPlatform, keepPage, sendDesktop } from '@/desktop'
@@ -14,6 +15,7 @@ import { SliderRange, SliderRoot, SliderThumb, SliderTrack } from 'reka-ui'
 import AccountOrderList from './AccountOrderList.vue'
 import ApiKeyInput from './ApiKeyInput.vue'
 import DurationInput from './DurationInput.vue'
+import OrderList from './OrderList.vue'
 import PairRows from './PairRows.vue'
 import PathList from './PathList.vue'
 import SettingRow from './SettingRow.vue'
@@ -81,6 +83,7 @@ const sections: {
       'smart_hard_rpm',
       'quota_auto_freeze',
       'account_order',
+      'account_test_models',
       'max_account_switches',
     ],
   },
@@ -322,6 +325,26 @@ function keyAccountsLabel(key: string): string {
 
 // modelIDs 是模型目录中的全部模型 ID
 const modelIDs = computed(() => props.models.map((model) => model.id))
+
+// testModelIDs 是能做账户对话测试、且有账户的权益等级可用的模型，已选中的模型即使暂时不在目录中也保留
+const testModelIDs = computed(() => {
+  const ids = props.models
+    .filter((model) => accountTestable(model) && tierAllows(model, props.accounts))
+    .map((model) => model.id)
+  return [...new Set([...parseTestModels(form.account_test_models), ...ids])]
+})
+
+// testModelText 是测试模型排序列表的文案
+const testModelText = computed(() => ({
+  drag: (name: string) => t('settings.accountTestModelsDrag').replace('{model}', name),
+  up: (name: string) => t('settings.accountTestModelsUp').replace('{model}', name),
+  down: (name: string) => t('settings.accountTestModelsDown').replace('{model}', name),
+  remove: (name: string) => t('settings.accountTestModelsRemove').replace('{model}', name),
+  add: t('settings.accountTestModelsAdd'),
+  search: t('settings.modelSearch'),
+  empty: t('settings.modelNone'),
+  clear: t('settings.selectionClear'),
+}))
 
 // modelOptions 是行编辑器中可选的模型
 const modelOptions = computed(() => modelIDs.value.map((id) => ({ value: id, label: id })))
@@ -809,6 +832,31 @@ async function saveConfig(): Promise<void> {
                 :value="form.account_order ?? ''"
                 @change="form.account_order = $event"
               />
+            </SettingRow>
+            <SettingRow
+              :label="t('settings.accountTestModels')"
+              group-id="setting-account-test-models"
+              :description="t('settings.accountTestModelsHelp')"
+              effect="immediate"
+              :changed="changedFields.has('account_test_models')"
+              :env="environmentKey('account_test_models')"
+            >
+              <OrderList
+                v-slot="{ selected }"
+                :options="testModelIDs"
+                :value="form.account_test_models ?? ''"
+                :format="(id: string) => id"
+                labelledby="setting-account-test-models-label"
+                large
+                :text="testModelText"
+                @change="form.account_test_models = $event"
+              >
+                <span class="text-xs text-gray-500">{{
+                  selected.length === 0
+                    ? t('settings.accountTestModelsUnset')
+                    : t('settings.accountTestModelsDefault').replace('{model}', selected[0] ?? '')
+                }}</span>
+              </OrderList>
             </SettingRow>
             <SettingRow
               :label="t('settings.maxAccountSwitches')"

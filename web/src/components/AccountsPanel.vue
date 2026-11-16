@@ -9,9 +9,11 @@ import {
   DropdownMenuTrigger,
 } from 'reka-ui'
 import { api, ApiError } from '@/api'
+import { parseTestModels } from '@/accountTest'
 import { useDownloadProgress, waitsForCamoufox } from '@/camoufox'
 import { useI18n, type TranslationKey } from '@/i18n'
 import { usePaged } from '@/paging'
+import { readPreference, writePreference } from '@/preference'
 import { maskedProxy } from '@/proxy'
 import type {
   Account,
@@ -53,6 +55,8 @@ const props = defineProps<{
   camoufox: PreparationStatus | undefined
   // geoip 是出口 IP 库的准备状态，下载期间在出口区块与进行中的任务行显示进度
   geoip: PreparationStatus | undefined
+  // testModels 是设置中账户测试下拉框按顺序列出的模型 ID，逗号分隔，为空时测试自动选模型
+  testModels: string
 }>()
 
 const emit = defineEmits<{
@@ -215,6 +219,22 @@ const search = ref('')
 const selectedState = ref('')
 const selectedTier = ref('')
 const selectedEgress = ref('*')
+// testModelOptions 是设置中勾选的账户测试模型，按设置顺序
+const testModelOptions = computed(() => parseTestModels(props.testModels))
+// pickedTestModel 是浏览器记住的测试模型，不在设置的列表中时用第一个
+const pickedTestModel = ref(
+  readPreference('accounts.testModel', '', (value) => typeof value === 'string'),
+)
+const testModel = computed({
+  get: () =>
+    testModelOptions.value.includes(pickedTestModel.value)
+      ? pickedTestModel.value
+      : (testModelOptions.value[0] ?? ''),
+  set: (value: string) => {
+    pickedTestModel.value = value
+    writePreference('accounts.testModel', value)
+  },
+})
 const states = computed(() =>
   keepSelected(
     [...new Set(props.accounts.map((account) => account.state))],
@@ -976,7 +996,7 @@ async function testAccount(account: Account): Promise<void> {
   testing.add(account.id)
   testErrors.delete(account.id)
   try {
-    const result = await api.testAccount(account.id)
+    const result = await api.testAccount(account.id, testModel.value)
     emit('updated', result.account)
     emit('refresh')
     if (result.ok) {
@@ -1315,6 +1335,17 @@ async function refreshAccounts(accounts: Account[]): Promise<void> {
           <option value="*">{{ t('accounts.allEgresses') }}</option>
           <option v-for="egress in egresses" :key="egress" :value="egress">
             {{ egress ? maskedProxy(egress) : t('accounts.direct') }}
+          </option>
+        </UiSelect>
+        <UiSelect
+          v-if="testModelOptions.length > 0"
+          v-model="testModel"
+          v-tooltip="t('accounts.testModel')"
+          :aria-label="t('accounts.testModel')"
+          class="max-w-60 rounded-md border border-line bg-canvas px-2 py-1.5 text-xs text-gray-200"
+        >
+          <option v-for="model in testModelOptions" :key="model" :value="model">
+            {{ model }}
           </option>
         </UiSelect>
       </div>

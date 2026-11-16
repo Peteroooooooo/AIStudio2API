@@ -544,6 +544,7 @@ onMounted(() => {
             :chrome-import="status?.chrome_import ?? false"
             :camoufox="status?.camoufox"
             :geoip="status?.geoip"
+            :test-models="config?.account_test_models ?? ''"
             @refresh="loadAccountData"
             @updated="updateAccount"
             @notice="showNotice"

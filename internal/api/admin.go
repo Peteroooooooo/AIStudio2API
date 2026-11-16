@@ -347,6 +347,7 @@ type RuntimeConfig struct {
 	SmartHardRPM              int                  `json:"smart_hard_rpm"`
 	QuotaAutoFreeze           bool                 `json:"quota_auto_freeze"`
 	AccountOrder              string               `json:"account_order"`
+	AccountTestModels         string               `json:"account_test_models"`
 	MaxAccountSwitches        int                  `json:"max_account_switches"`
 	UpstreamChannels          []string             `json:"upstream_channels"`
 	ModelMapping              string               `json:"model_mapping"`
