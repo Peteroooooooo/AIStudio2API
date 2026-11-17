@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Mag1cFall/AIStudio2API/internal/aistudio"
@@ -97,6 +98,8 @@ type runtimeManager struct {
 	lifecycle        context.Context
 	configPath       string
 	activeManagement config.Config
+	// apiKey 是当前生效的公开 API key，设置页保存后立即替换
+	apiKey atomic.Pointer[string]
 	// reservedListenAddr 是被 Windows 保留而改用 activeManagement.ListenAddr 监听的配置地址，没有改用时为空
 	reservedListenAddr string
 	previewAddress     string
@@ -134,6 +137,7 @@ func newRuntimeManager(
 		lifecycle: ctx, configPath: configPath, activeManagement: cfg,
 		overrides: overrides, requests: requests, factory: buildRuntimeGeneration,
 	}
+	manager.setAPIKey(cfg.ProxyAPIKey)
 	generation, err := manager.factory(ctx, ctx, cfg, requests)
 	if err != nil {
 		return nil, err
@@ -646,6 +650,7 @@ func (manager *runtimeManager) UpdateRuntimeConfig(ctx context.Context, value ap
 	manager.mu.Lock()
 	updated, err := manager.current.admin.UpdateRuntimeConfig(ctx, value)
 	if err == nil {
+		manager.setAPIKey(updated.APIKey)
 		manager.current.service.SetAPIKeyAccounts(apiKeyAccounts(updated.APIKey, updated.APIKeyAccounts, manager.activeManagement))
 		manager.current.service.ApplyCapacity(
 			updated.WarmWorkerLimit, updated.MaxActiveWorkers, updated.WarmStartupConcurrency, updated.PerAccountConcurrency,
@@ -752,11 +757,24 @@ func (manager *runtimeManager) watchQuotaRecovery(ctx context.Context) {
 	}
 }
 
+// setAPIKey 替换当前生效的公开 API key，之后到达的请求按新 key 校验
+func (manager *runtimeManager) setAPIKey(key string) {
+	manager.apiKey.Store(&key)
+}
+
+// APIKey 返回当前生效的公开 API key
+func (manager *runtimeManager) APIKey() string {
+	if key := manager.apiKey.Load(); key != nil {
+		return *key
+	}
+	return ""
+}
+
 // decorateRuntimeConfig 标记配置所属的进程级与生成服务生效时机
 func (manager *runtimeManager) decorateRuntimeConfig(value api.RuntimeConfig, active config.Config) api.RuntimeConfig {
 	value.ActiveListenAddr = manager.activeManagement.ListenAddr
 	value.ReservedListenAddr = manager.reservedListenAddr
-	value.ActiveAPIKey = manager.activeManagement.ProxyAPIKey
+	value.ActiveAPIKey = manager.APIKey()
 	value.ActivePreviewListenAddr = manager.previewAddress
 	value.ManagementRestartRequired = value.ListenAddr != value.ActiveListenAddr && value.ListenAddr != value.ReservedListenAddr || value.APIKey != value.ActiveAPIKey ||
 		value.PreviewListenAddr != manager.activeManagement.PreviewListenAddr

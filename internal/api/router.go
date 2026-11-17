@@ -14,7 +14,8 @@ import (
 
 // Config 定义公开 API 服务配置
 type Config struct {
-	APIKey           string
+	// APIKey 返回当前生效的逗号分隔公开 API key，每个请求都重新读取，设置页保存后立即生效；为 nil 时不校验
+	APIKey           func() string
 	Admin            AdminService
 	AdminAuthEnabled bool
 	AdminUsername    string
@@ -70,6 +71,9 @@ var idSequence atomic.Uint64
 
 // NewHandler 创建公开 API 路由
 func NewHandler(service aistudio.Service, config Config) http.Handler {
+	if config.APIKey == nil {
+		config.APIKey = func() string { return "" }
+	}
 	s := &server{
 		service: service, config: config, responseStates: newResponseStateStore(config.States), uploads: newGeminiUploads(), caches: newGeminiCaches(),
 		thoughtSignatures: newThoughtSignatureStore(), pairing: &pairingTokens{}, loginViews: &loginViews{}, accountTasks: &accountTasks{},

@@ -8,7 +8,7 @@ import (
 
 func TestAuthMiddlewarePriorityAndMatching(t *testing.T) {
 	requiredKey := "secret-123"
-	handler := authMiddleware(requiredKey, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := authMiddleware(func() string { return requiredKey }, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 

@@ -520,7 +520,7 @@ export const messages: Record<TranslationKey, string> = {
   'settings.activeValue': '目前生效',
   'settings.previewFallback': '{configured} 已被佔用或無法使用，預覽服務已改用 {active}',
   'settings.pendingService': '已儲存的值會在下次啟動生成服務時生效',
-  'settings.pendingManagement': '監聽位址、API 金鑰或主控台登入需重新啟動程式才會生效',
+  'settings.pendingManagement': '監聽位址或主控台登入需重新啟動程式才會生效',
   'settings.saved': '設定已儲存',
   'settings.savedService': '設定已儲存，請在左下角停止並重新啟動生成服務以套用',
   'settings.savedManagement': '設定已儲存，請重新啟動程式以套用',

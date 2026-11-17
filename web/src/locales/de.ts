@@ -547,7 +547,7 @@ export const messages: Record<TranslationKey, string> = {
   'settings.pendingService':
     'Gespeicherte Werte gelten ab dem nächsten Start des Generierungsdienstes',
   'settings.pendingManagement':
-    'Starten Sie die App neu, um Listen-Adresse, API-Schlüssel oder Konsolenanmeldung zu übernehmen',
+    'Starten Sie die App neu, um Listen-Adresse oder Konsolenanmeldung zu übernehmen',
   'settings.saved': 'Einstellungen gespeichert',
   'settings.savedService':
     'Einstellungen gespeichert. Beenden und starten Sie den Generierungsdienst unten links, um sie zu übernehmen',

@@ -540,7 +540,7 @@ export const messages: Record<TranslationKey, string> = {
   'settings.previewFallback':
     '{configured} 주소가 사용 중이거나 사용할 수 없어 미리보기가 {active} 주소로 실행 중입니다',
   'settings.pendingService': '저장한 값은 다음에 생성 서비스를 시작할 때 적용됩니다',
-  'settings.pendingManagement': '수신 주소, API 키, 콘솔 로그인은 앱을 다시 시작해야 적용됩니다',
+  'settings.pendingManagement': '수신 주소와 콘솔 로그인은 앱을 다시 시작해야 적용됩니다',
   'settings.saved': '설정을 저장했습니다',
   'settings.savedService':
     '설정을 저장했습니다. 왼쪽 아래에서 생성 서비스를 중지한 뒤 다시 시작하면 적용됩니다',

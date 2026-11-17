@@ -515,7 +515,7 @@ export const messages = {
   'settings.activeValue': '当前生效',
   'settings.previewFallback': '{configured} 被占用或不可用，预览服务已改用 {active}',
   'settings.pendingService': '已保存值将在下次生成服务启动时生效',
-  'settings.pendingManagement': '监听地址、API 密钥或管理登录需重启程序生效',
+  'settings.pendingManagement': '监听地址或管理登录需重启程序生效',
   'settings.saved': '配置已保存',
   'settings.savedService': '配置已保存，在左下角停止并重新启动生成服务后生效',
   'settings.savedManagement': '配置已保存，请重启程序',

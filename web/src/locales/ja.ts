@@ -544,7 +544,7 @@ export const messages: Record<TranslationKey, string> = {
     '{configured} は使用中または利用できないため、プレビューは {active} で待ち受けています',
   'settings.pendingService': '保存した値は次回の生成サービス起動時に反映されます',
   'settings.pendingManagement':
-    '待ち受けアドレス、API キー、コンソールのログインはアプリを再起動すると反映されます',
+    '待ち受けアドレスとコンソールのログインはアプリを再起動すると反映されます',
   'settings.saved': '設定を保存しました',
   'settings.savedService':
     '設定を保存しました。左下で生成サービスを停止してから再度開始すると反映されます',

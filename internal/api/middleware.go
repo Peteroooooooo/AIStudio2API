@@ -453,11 +453,12 @@ func loopbackHost(host string) bool {
 }
 
 // browserOriginMiddleware 在未配置 API key 时拒绝外部网页与 null 来源的浏览器请求
-func browserOriginMiddleware(requiredKey string, next http.Handler) http.Handler {
-	if strings.TrimSpace(requiredKey) != "" {
-		return next
-	}
+func browserOriginMiddleware(requiredKey func() string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.TrimSpace(requiredKey()) != "" {
+			next.ServeHTTP(w, r)
+			return
+		}
 		originValue := strings.TrimSpace(r.Header.Get("Origin"))
 		if originValue == "" {
 			next.ServeHTTP(w, r)
@@ -504,10 +505,9 @@ func sameOriginMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-func authMiddleware(configuredKeys string, next http.Handler) http.Handler {
-	keys := apiKeys(configuredKeys)
+func authMiddleware(configuredKeys func() string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if len(keys) > 0 && !checkAPIKeyMatches(r, keys) {
+		if keys := apiKeys(configuredKeys()); len(keys) > 0 && !checkAPIKeyMatches(r, keys) {
 			writeAuthError(w, r)
 			return
 		}
@@ -532,12 +532,9 @@ func accountContextMiddleware(next http.Handler) http.Handler {
 }
 
 // apiKeyContextMiddleware 把请求所用的已配置 API key 放进请求上下文，供账户池按 key 绑定的账户选号
-func apiKeyContextMiddleware(configuredKeys string, next http.Handler) http.Handler {
-	keys := apiKeys(configuredKeys)
-	if len(keys) == 0 {
-		return next
-	}
+func apiKeyContextMiddleware(configuredKeys func() string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		keys := apiKeys(configuredKeys())
 		for _, candidate := range apiKeyCandidates(r) {
 			if candidate != "" && slices.Contains(keys, candidate) {
 				r = r.WithContext(aistudio.ContextWithAPIKey(r.Context(), candidate))

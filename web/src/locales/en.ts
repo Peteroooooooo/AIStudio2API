@@ -540,7 +540,7 @@ export const messages: Record<TranslationKey, string> = {
     '{configured} is in use or unavailable, so the preview service uses {active}',
   'settings.pendingService': 'Saved values apply the next time the generation service starts',
   'settings.pendingManagement':
-    'Restart the app to apply the listen address, API key, or console sign-in',
+    'Restart the app to apply the listen address or console sign-in',
   'settings.saved': 'Settings saved',
   'settings.savedService':
     'Settings saved. Stop and start the generation service at the bottom left to apply them.',

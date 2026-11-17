@@ -548,7 +548,7 @@ export const messages: Record<TranslationKey, string> = {
   'settings.pendingService':
     'Les valeurs enregistrées s’appliqueront au prochain démarrage du service de génération',
   'settings.pendingManagement':
-    'Redémarrez l’application pour appliquer l’adresse d’écoute, la clé API ou la connexion à la console',
+    'Redémarrez l’application pour appliquer l’adresse d’écoute ou la connexion à la console',
   'settings.saved': 'Paramètres enregistrés',
   'settings.savedService':
     'Paramètres enregistrés. Arrêtez puis redémarrez le service de génération en bas à gauche pour les appliquer',
