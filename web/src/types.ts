@@ -444,6 +444,7 @@ export interface ServiceConfig {
   routing_strategy: 'round-robin' | 'fill-first' | 'smart'
   smart_soft_rpm: number
   smart_hard_rpm: number
+  smart_session_ttl: string
   quota_auto_freeze: boolean
   account_order: string
   account_test_models: string

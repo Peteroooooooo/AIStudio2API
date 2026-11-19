@@ -1175,6 +1175,13 @@ func (admin *runtimeAdmin) UpdateRuntimeConfig(_ context.Context, value api.Runt
 	if err != nil {
 		return api.RuntimeConfig{}, invalidConfigError(fmt.Errorf("REQUEST_TIMEOUT 无效: %w", err))
 	}
+	smartSessionTTL := saved.SmartSessionTTL
+	if strings.TrimSpace(value.SmartSessionTTL) != "" {
+		smartSessionTTL, err = time.ParseDuration(strings.TrimSpace(value.SmartSessionTTL))
+		if err != nil {
+			return api.RuntimeConfig{}, invalidConfigError(fmt.Errorf("SMART_SESSION_TTL 无效: %w", err))
+		}
+	}
 	cfg := config.Config{
 		AutoStart:      value.AutoStart,
 		HideDockIcon:   value.HideDockIcon,
@@ -1193,6 +1200,7 @@ func (admin *runtimeAdmin) UpdateRuntimeConfig(_ context.Context, value api.Runt
 		RoutingStrategy:        value.RoutingStrategy,
 		SmartSoftRPM:           value.SmartSoftRPM,
 		SmartHardRPM:           value.SmartHardRPM,
+		SmartSessionTTL:        smartSessionTTL,
 		QuotaAutoFreeze:        value.QuotaAutoFreeze,
 		AccountOrder:           strings.TrimSpace(value.AccountOrder),
 		AccountTestModels:      strings.TrimSpace(value.AccountTestModels),
@@ -1216,6 +1224,7 @@ func (admin *runtimeAdmin) UpdateRuntimeConfig(_ context.Context, value api.Runt
 	admin.pool.SetSmartConfig(aistudio.SmartConfig{
 		SoftRPM:         cfg.SmartSoftRPM,
 		HardRPM:         cfg.SmartHardRPM,
+		SessionTTL:      cfg.SmartSessionTTL,
 		QuotaAutoFreeze: cfg.QuotaAutoFreeze,
 	})
 	admin.pool.SetAccountOrder(accountOrder(cfg.AccountOrder))
@@ -1231,6 +1240,7 @@ func (admin *runtimeAdmin) UpdateRuntimeConfig(_ context.Context, value api.Runt
 	admin.config.RoutingStrategy = cfg.RoutingStrategy
 	admin.config.SmartSoftRPM = cfg.SmartSoftRPM
 	admin.config.SmartHardRPM = cfg.SmartHardRPM
+	admin.config.SmartSessionTTL = cfg.SmartSessionTTL
 	admin.config.QuotaAutoFreeze = cfg.QuotaAutoFreeze
 	admin.config.AccountOrder = cfg.AccountOrder
 	admin.config.AccountTestModels = cfg.AccountTestModels
@@ -1531,6 +1541,7 @@ func runtimeConfigDTO(cfg config.Config) api.RuntimeConfig {
 		RoutingStrategy:        cfg.RoutingStrategy,
 		SmartSoftRPM:           cfg.SmartSoftRPM,
 		SmartHardRPM:           cfg.SmartHardRPM,
+		SmartSessionTTL:        cfg.SmartSessionTTL.String(),
 		QuotaAutoFreeze:        cfg.QuotaAutoFreeze,
 		AccountOrder:           cfg.AccountOrder,
 		AccountTestModels:      cfg.AccountTestModels,

@@ -117,8 +117,8 @@ export function useUsageState(): UsageViewState {
     () => writeState(state),
   )
   const sync = (): void => {
-    if (new URLSearchParams(window.location.search).get('tab') === 'usage')
-      Object.assign(state, readState())
+    const tab = new URLSearchParams(window.location.search).get('tab')
+    if (tab === null || tab === 'usage' || tab === 'requests') Object.assign(state, readState())
   }
   window.addEventListener('popstate', sync)
   onUnmounted(() => window.removeEventListener('popstate', sync))

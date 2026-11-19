@@ -2,10 +2,19 @@
 import { computed, onActivated, onDeactivated, provide, ref, shallowRef, watch } from 'vue'
 import { api } from '@/api'
 import { useI18n } from '@/i18n'
-import type { Model, UsageDimension, UsageReport, UsageStats } from '@/types'
+import type {
+  Account,
+  Cooldown,
+  Model,
+  RequestSummary,
+  UsageDimension,
+  UsageReport,
+  UsageStats,
+} from '@/types'
 import UiIcon from './UiIcon.vue'
 import UiSelect, { keepSelected } from './UiSelect.vue'
 import FilterMenu from './FilterMenu.vue'
+import RequestsPanel from './RequestsPanel.vue'
 import KpiCard from './usage/KpiCard.vue'
 import RangePicker from './usage/RangePicker.vue'
 import RankingTable from './usage/RankingTable.vue'
@@ -24,12 +33,70 @@ import {
   type RangePreset,
 } from './usage/model'
 
-const props = defineProps<{ models: Model[] }>()
+type SubTab = 'realtime' | 'accounts' | 'cooldowns' | 'charts'
+
+const props = withDefaults(
+  defineProps<{
+    models: Model[]
+    accounts?: Account[]
+    cooldowns?: Cooldown[]
+    requests?: RequestSummary[]
+    requestsLoading?: boolean
+    cooldownError?: string
+    requestError?: string
+    initialSubTab?: SubTab
+  }>(),
+  {
+    accounts: () => [],
+    cooldowns: () => [],
+    requests: () => [],
+    requestsLoading: false,
+    cooldownError: '',
+    requestError: '',
+    initialSubTab: 'realtime',
+  },
+)
+
+const emit = defineEmits<{
+  refreshRequests: []
+  notice: [message: string, tone: 'success' | 'error']
+}>()
+
 const { t, errorText } = useI18n()
 const { compact, integer, usd, percent, duration, dateTime, dimensionLabel } = useUsageFormat()
 const state = useUsageState()
 
-// filterOptions 返回筛选候选，模型按模型目录顺序排列，目录外的取值排在最后
+const subTab = ref<SubTab>(
+  readPreference<SubTab>('usage.subTab', props.initialSubTab, (value) =>
+    ['realtime', 'accounts', 'cooldowns', 'charts'].includes(value as string),
+  ),
+)
+watch(subTab, (value) => writePreference('usage.subTab', value))
+watch(
+  () => props.initialSubTab,
+  (value) => {
+    if (value === 'cooldowns') subTab.value = 'cooldowns'
+  },
+)
+
+const onlyFailed = ref(false)
+const quickSearch = ref(state.search)
+watch(
+  () => state.search,
+  (value) => {
+    quickSearch.value = value
+  },
+)
+let quickSearchTimer: number | undefined
+watch(quickSearch, (value) => {
+  window.clearTimeout(quickSearchTimer)
+  quickSearchTimer = window.setTimeout(() => {
+    state.search = value.trim()
+  }, 260)
+})
+
+const quickRanges: RangePreset[] = ['today', 'quotaCycle', '7d', '30d', '90d']
+
 function filterOptions(dimension: UsageDimension): string[] {
   const options = report.value?.options[dimension] ?? []
   if (dimension !== 'model') return options
@@ -37,6 +104,7 @@ function filterOptions(dimension: UsageDimension): string[] {
   const rank = (value: string) => order.get(value) ?? order.size
   return [...options].sort((left, right) => rank(left) - rank(right))
 }
+
 const report = shallowRef<UsageReport | null>(null)
 const status = ref<'loading' | 'ready' | 'error'>('loading')
 const loading = ref(false)
@@ -45,9 +113,9 @@ const updatedAt = ref(0)
 const now = ref(Date.now())
 provide(usageClock, now)
 const recordsRefresh = ref(0)
-const refreshChoices = [0, 15, 30, 60] as const
+const refreshChoices = [0, 5, 15, 30, 60] as const
 const autoRefresh = ref<number>(
-  readPreference('usage.autoRefresh', 30, (value) =>
+  readPreference('usage.autoRefresh', 15, (value) =>
     refreshChoices.includes(value as (typeof refreshChoices)[number]),
   ),
 )
@@ -56,14 +124,18 @@ const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone
 let controller: AbortController | undefined
 let clockTimer: number | undefined
 
-// minute 是取整到分钟的时钟，时间范围只显示到分钟
 const minute = computed(() => Math.floor(now.value / 60_000) * 60_000)
 const resolved = computed(() => resolveRange(state, new Date(minute.value)))
 const live = computed(() => liveRange(state.range))
-const hasFilters = computed(() => dimensions.some((item) => (state.filters[item] ?? []).length > 0))
+const hasFilters = computed(
+  () =>
+    dimensions.some((item) => (state.filters[item] ?? []).length > 0) ||
+    state.search !== '' ||
+    state.status !== '' ||
+    onlyFailed.value,
+)
 const scope = computed(() => JSON.stringify([state.range, state.from, state.to, state.filters]))
 
-// baseQuery 在调用时解析时间范围并写入范围与筛选参数，自定义范围无效时返回 null
 function baseQuery(): URLSearchParams | null {
   const range = resolveRange(state, new Date())
   if (range === null) return null
@@ -75,7 +147,6 @@ function baseQuery(): URLSearchParams | null {
   return query
 }
 
-// load 读取用量报告，新的请求会取消尚未完成的旧请求
 async function load(): Promise<void> {
   const query = baseQuery()
   if (query === null) {
@@ -105,7 +176,6 @@ async function load(): Promise<void> {
   }
 }
 
-// loadPairs 读取当前范围与筛选下一个账户或模型的组合明细，主报告不含组合明细
 async function loadPairs(
   dimension: 'account' | 'model',
   key: string,
@@ -118,10 +188,10 @@ async function loadPairs(
   return (await api.usage(query, new AbortController().signal)).pairs
 }
 
-// refresh 立即刷新报告与请求记录
 function refresh(): void {
   void load()
   recordsRefresh.value++
+  emit('refreshRequests')
 }
 
 watch(
@@ -129,7 +199,6 @@ watch(
   () => void load(),
 )
 
-// tick 每秒更新时钟，到期且页面可见时自动刷新
 function tick(): void {
   now.value = Date.now()
   if (
@@ -143,7 +212,6 @@ function tick(): void {
     refresh()
 }
 
-// resume 页面重新可见时补一次过期的刷新
 function resume(): void {
   if (document.visibilityState === 'visible') tick()
 }
@@ -157,15 +225,14 @@ onActivated(() => {
 onDeactivated(() => {
   controller?.abort()
   window.clearInterval(clockTimer)
+  window.clearTimeout(quickSearchTimer)
   document.removeEventListener('visibilitychange', resume)
 })
 
-// applyRange 应用时间范围选择
 function applyRange(range: RangePreset, from: string, to: string): void {
   Object.assign(state, { range, from, to })
 }
 
-// setFilter 替换一个维度的筛选值
 function setFilter(dimension: UsageDimension, values: string[]): void {
   const filters = { ...state.filters }
   if (values.length === 0) delete filters[dimension]
@@ -173,15 +240,17 @@ function setFilter(dimension: UsageDimension, values: string[]): void {
   state.filters = filters
 }
 
-// addFilter 把取值加入维度筛选
 function addFilter(dimension: UsageDimension, value: string): void {
   const values = state.filters[dimension] ?? []
   if (!values.includes(value)) setFilter(dimension, [...values, value])
 }
 
-// clearFilters 清除全部维度筛选
 function clearFilters(): void {
   state.filters = {}
+  state.status = ''
+  state.search = ''
+  quickSearch.value = ''
+  onlyFailed.value = false
 }
 
 const activeChips = computed(() =>
@@ -190,12 +259,10 @@ const activeChips = computed(() =>
   ),
 )
 
-// relative 返回相对变化比例，上一周期为 0 时返回 null
 function relative(current: number, previous: number): number | null {
   return previous > 0 ? (current - previous) / previous : null
 }
 
-// delta 生成相对上一周期的变化标注
 function delta(
   change: number | null,
   text: (value: number) => string,
@@ -231,42 +298,35 @@ const kpis = computed(() => {
     buckets.map(pick).filter((item): item is number => item !== null)
   const otherErrors = totals.failed - totals.rate_limited
   const first = totals.first_event
+  const outTokens = totals.reasoning_tokens + totals.reply_tokens
+  const cacheRatio = totals.input_tokens > 0 ? totals.cached_tokens / totals.input_tokens : null
+
   return [
     {
       label: t('usage.requests'),
       icon: 'requests' as const,
+      iconBg: 'bg-blue-500/12 text-blue-400',
       value: integer(totals.requests),
       raw: totals.requests,
       help: t('usage.requestsHelp'),
       details: [
-        {
-          label: t('usage.failed'),
-          value: integer(totals.failed),
-          tone: totals.failed > 0 ? 'text-red-400' : undefined,
-        },
+        { label: t('usage.succeeded'), value: integer(totals.succeeded) },
         { label: t('usage.canceled'), value: integer(totals.canceled) },
       ],
       delta: delta(relative(totals.requests, previous.requests), (item) => percent(item), 'none'),
       spark: buckets.map((bucket) => bucket.requests),
-      color: '#60a5fa',
+      color: '#3b82f6',
     },
     {
       label: t('usage.successRate'),
       icon: 'success' as const,
+      iconBg: 'bg-green-500/12 text-green-400',
       value: percent(rate),
       raw: rate,
       help: t('usage.successRateHelp'),
       details: [
-        {
-          label: t('usage.rateLimitedShort'),
-          value: integer(totals.rate_limited),
-          tone: totals.rate_limited > 0 ? 'text-yellow-400' : undefined,
-        },
-        {
-          label: t('usage.otherErrors'),
-          value: integer(otherErrors),
-          tone: otherErrors > 0 ? 'text-red-400' : undefined,
-        },
+        { label: `${t('usage.firstEvent')} P50`, value: duration(first.p50_ms) },
+        { label: 'P95', value: duration(first.p95_ms) },
       ],
       delta: delta(
         rate === null || previousRate === null ? null : rate - previousRate,
@@ -281,15 +341,69 @@ const kpis = computed(() => {
       tone: rateTone(rate),
     },
     {
+      label: t('usage.failedCard'),
+      icon: 'warning' as const,
+      iconBg: 'bg-red-500/12 text-red-400',
+      value: integer(totals.failed),
+      raw: totals.failed,
+      help: `${t('usage.rateLimitedShort')} + ${t('usage.otherErrors')}`,
+      details: [
+        {
+          label: t('usage.rateLimitedShort'),
+          value: integer(totals.rate_limited),
+          tone: totals.rate_limited > 0 ? 'text-yellow-400' : undefined,
+        },
+        {
+          label: t('cooldowns.title'),
+          value: integer(props.cooldowns.length),
+          tone: props.cooldowns.length > 0 ? 'text-red-400' : undefined,
+        },
+      ],
+      delta: delta(relative(totals.failed, previous.failed), (item) => percent(item), 'down'),
+      spark: buckets.map((bucket) => bucket.failed),
+      color: '#ef4444',
+      tone: totals.failed > 0 ? 'text-red-400' : 'text-white',
+    },
+    {
+      label: t('usage.cost'),
+      icon: 'cost' as const,
+      iconBg: 'bg-amber-500/12 text-amber-400',
+      value: value.cost === 0 && value.unpriced_models.length > 0 ? '—' : usd(value.cost),
+      raw: value.cost === 0 && value.unpriced_models.length > 0 ? null : value.cost,
+      help:
+        value.unpriced_models.length > 0
+          ? `${t('usage.costHelp')} · ${t('usage.unpriced')} ${value.unpriced_models.join(', ')}`
+          : t('usage.costHelp'),
+      details:
+        value.cost === 0 && value.unpriced_models.length > 0
+          ? [
+              {
+                label: t('usage.unpriced'),
+                value: value.unpriced_models.join(', '),
+                tone: 'text-amber-400',
+              },
+            ]
+          : [
+              {
+                label: t('usage.otherErrors'),
+                value: integer(otherErrors),
+                tone: otherErrors > 0 ? 'text-red-400' : undefined,
+              },
+            ],
+      delta: delta(relative(value.cost, value.previous_cost), (item) => percent(item), 'none'),
+      spark: buckets.map((bucket) => bucket.cost),
+      color: '#f59e0b',
+    },
+    {
       label: t('usage.tokens'),
       icon: 'tokens' as const,
+      iconBg: 'bg-purple-500/12 text-purple-400',
       value: compact(totals.total_tokens),
       raw: totals.total_tokens,
       help: `${t('usage.input')} + ${t('usage.output')}`,
       details: [
-        { label: t('usage.input'), value: compact(totals.input_tokens) },
-        { label: t('usage.cached'), value: compact(totals.cached_tokens) },
-        { label: t('usage.output'), value: compact(totals.reasoning_tokens + totals.reply_tokens) },
+        { label: `${recent.minutes}m`, value: `${compact(recent.requests / recent.minutes)} RPM` },
+        { label: 'TPM', value: compact(recent.tokens / recent.minutes) },
       ],
       delta: delta(
         relative(totals.total_tokens, previous.total_tokens),
@@ -297,64 +411,74 @@ const kpis = computed(() => {
         'none',
       ),
       spark: buckets.map((bucket) => bucket.total_tokens),
-      color: '#2dd4bf',
+      color: '#8b5cf6',
     },
     {
-      label: t('usage.throughput'),
+      label: t('usage.input'),
       icon: 'throughput' as const,
-      value: `${compact(recent.requests / recent.minutes)} RPM`,
-      raw: recent.requests / recent.minutes,
-      help: t('usage.throughputHelp').replace('{minutes}', String(recent.minutes)),
-      details: [
-        { label: t('usage.recentMinutes').replace('{minutes}', String(recent.minutes)), value: '' },
-        { label: 'TPM', value: compact(recent.tokens / recent.minutes) },
-      ],
-      spark: buckets.map((bucket) => bucket.requests),
-      color: '#f59e0b',
-    },
-    {
-      label: t('usage.cost'),
-      icon: 'cost' as const,
-      value: value.cost === 0 && value.unpriced_models.length > 0 ? '—' : usd(value.cost),
-      raw: value.cost === 0 && value.unpriced_models.length > 0 ? null : value.cost,
-      help:
-        value.unpriced_models.length > 0
-          ? `${t('usage.costHelp')} · ${t('usage.unpriced')} ${value.unpriced_models.join(', ')}`
-          : t('usage.costHelp'),
+      iconBg: 'bg-sky-500/12 text-sky-400',
+      value: compact(totals.input_tokens),
+      raw: totals.input_tokens,
+      help: t('usage.input'),
       details: [
         {
-          label: t('usage.cacheHitRate'),
+          label: t('usage.tokens'),
           value:
-            totals.input_tokens > 0 ? percent(totals.cached_tokens / totals.input_tokens) : '—',
+            totals.total_tokens > 0
+              ? percent(totals.input_tokens / totals.total_tokens)
+              : '—',
         },
-        ...(value.cost === 0 && value.unpriced_models.length > 0
-          ? [
-              {
-                label: t('usage.unpriced'),
-                value: value.unpriced_models.join(', '),
-                tone: 'text-amber-300',
-              },
-            ]
-          : []),
       ],
-      delta: delta(relative(value.cost, value.previous_cost), (item) => percent(item), 'none'),
-      spark: buckets.map((bucket) => bucket.cost),
-      color: '#34d399',
+      delta: delta(
+        relative(totals.input_tokens, previous.input_tokens),
+        (item) => percent(item),
+        'none',
+      ),
+      spark: buckets.map((bucket) => bucket.input_tokens),
+      color: '#0ea5e9',
     },
     {
-      label: `${t('usage.firstEvent')} P50`,
+      label: t('usage.output'),
       icon: 'firstEvent' as const,
-      value: duration(first.p50_ms),
-      raw: first.p50_ms > 0 ? first.p50_ms : null,
-      help: t('usage.firstEventHelp'),
-      details: [{ label: 'P95', value: duration(first.p95_ms) }],
+      iconBg: 'bg-indigo-500/12 text-indigo-400',
+      value: compact(outTokens),
+      raw: outTokens,
+      help: `${t('usage.reasoning')} + ${t('usage.reply')}`,
+      details: [
+        { label: t('usage.reasoning'), value: compact(totals.reasoning_tokens) },
+        { label: t('usage.reply'), value: compact(totals.reply_tokens) },
+      ],
       delta: delta(
-        relative(first.p50_ms, previous.first_event.p50_ms),
+        relative(outTokens, previous.reasoning_tokens + previous.reply_tokens),
         (item) => percent(item),
-        'down',
+        'none',
       ),
-      spark: series((bucket) => (bucket.first_event.p50_ms > 0 ? bucket.first_event.p50_ms : null)),
-      color: '#a78bfa',
+      spark: buckets.map((bucket) => bucket.reasoning_tokens + bucket.reply_tokens),
+      color: '#6366f1',
+    },
+    {
+      label: t('usage.cachedCard'),
+      icon: 'cached' as const,
+      iconBg: 'bg-teal-500/12 text-cyan-400',
+      highlight: true,
+      value: compact(totals.cached_tokens),
+      raw: totals.cached_tokens,
+      help: t('usage.cacheHitRate'),
+      details: [
+        {
+          label: t('usage.cacheHitRateShort'),
+          value: cacheRatio !== null ? percent(cacheRatio) : '—',
+          tone: 'text-cyan-400 font-semibold',
+        },
+      ],
+      delta: delta(
+        relative(totals.cached_tokens, previous.cached_tokens),
+        (item) => percent(item),
+        'up',
+      ),
+      spark: buckets.map((bucket) => bucket.cached_tokens),
+      color: '#14b8a6',
+      tone: 'text-cyan-400',
     },
   ]
 })
@@ -366,104 +490,143 @@ const statusOptions = computed(() =>
     '',
   ),
 )
+
+const liveAndCooldownCount = computed(() => props.requests.length + props.cooldowns.length)
 </script>
 
 <template>
   <section class="relative flex min-h-0 flex-1 flex-col overflow-auto [scrollbar-gutter:stable]">
-    <header class="page-x flex flex-wrap items-center gap-3 border-b border-line py-4">
-      <div class="min-w-0 flex-1">
-        <h2 class="text-xl font-semibold text-white">{{ t('usage.title') }}</h2>
-        <p class="mt-1 text-sm text-gray-500">{{ t('usage.description') }}</p>
-      </div>
-      <div class="flex h-10 items-stretch rounded border border-line text-sm">
-        <RefreshButton
-          :loading="loading"
-          :live="live"
-          :updated-at="updatedAt"
-          :latest-at="report?.latest_at"
-          @refresh="refresh"
-        />
-        <UiSelect
-          v-if="live"
-          :model-value="autoRefresh"
-          :aria-label="t('usage.autoRefresh')"
-          class="w-max rounded-r border-l border-line px-3 text-gray-200 hover:bg-raised"
-          @update:model-value="autoRefresh = Number($event)"
-        >
-          <option v-for="choice in refreshChoices" :key="choice" :value="choice">
-            {{ t(`usage.autoRefresh.${choice}`) }}
-          </option>
-        </UiSelect>
-      </div>
-    </header>
-
-    <div
-      class="page-x sticky top-0 z-10 flex flex-wrap items-center gap-2 border-b border-line bg-canvas/95 py-2.5 backdrop-blur"
-      role="toolbar"
-      :aria-label="t('usage.filters')"
-    >
-      <RangePicker :range="state.range" :resolved="resolved" @apply="applyRange" />
-      <span class="mx-1 hidden h-5 w-px bg-line sm:block" aria-hidden="true"></span>
-      <FilterMenu
-        v-for="dimension in dimensions"
-        :key="dimension"
-        :label="t(`usage.dimension.${dimension}`)"
-        :options="filterOptions(dimension)"
-        :selected="state.filters[dimension] ?? []"
-        :format="(value: string) => dimensionLabel(dimension, value)"
-        :search-label="t('usage.filterSearch')"
-        :empty-label="t('usage.filterNone')"
-        :clear-label="t('usage.filtersClear')"
-        @change="setFilter(dimension, $event)"
-      />
-      <button
-        v-if="hasFilters"
-        type="button"
-        class="rounded-md px-2 py-1.5 text-xs text-gray-400 hover:bg-raised hover:text-white"
-        @click="clearFilters"
+    <div class="@container mx-auto w-full max-w-[90rem] space-y-4 px-4 py-4 md:px-6 md:py-5">
+      <!-- CPA Manager Style Two-Row Filter Toolbar Card -->
+      <div
+        class="space-y-3 rounded-2xl border border-line bg-panel p-3.5 shadow-sm"
+        role="toolbar"
+        :aria-label="t('usage.filters')"
       >
-        {{ t('usage.filtersClear') }}
-      </button>
-    </div>
-    <div v-if="activeChips.length > 0" class="page-x flex flex-wrap gap-1.5 pt-3">
-      <span
-        v-for="chip in activeChips"
-        :key="`${chip.dimension}:${chip.value}`"
-        class="flex max-w-full items-center gap-1 rounded-md border border-blue-500/40 bg-blue-600/10 py-0.5 pr-1 pl-2.5 text-xs text-blue-200"
-      >
-        <span class="shrink-0 text-blue-300/70">{{ t(`usage.dimension.${chip.dimension}`) }}:</span>
-        <span
-          v-tooltip.overflow="dimensionLabel(chip.dimension, chip.value)"
-          class="min-w-0 truncate"
-          >{{ dimensionLabel(chip.dimension, chip.value) }}</span
-        >
-        <button
-          type="button"
-          class="shrink-0 rounded-sm p-0.5 hover:bg-blue-500/20"
-          :aria-label="`${t('common.close')} ${dimensionLabel(chip.dimension, chip.value)}`"
-          @click="
-            setFilter(
-              chip.dimension,
-              (state.filters[chip.dimension] ?? []).filter((item) => item !== chip.value),
-            )
-          "
-        >
-          <UiIcon name="close" :size="11" />
-        </button>
-      </span>
-    </div>
+        <div class="flex flex-wrap items-center gap-2">
+          <div class="inline-flex flex-wrap items-center gap-0.5 rounded-xl border border-line bg-canvas p-1">
+            <button
+              v-for="preset in quickRanges"
+              :key="preset"
+              type="button"
+              class="rounded-lg px-2.5 py-1 text-xs font-medium transition"
+              :class="
+                state.range === preset
+                  ? 'bg-panel text-blue-400 shadow-sm font-semibold'
+                  : 'text-gray-400 hover:text-white'
+              "
+              @click="applyRange(preset, '', '')"
+            >
+              {{ t(`usage.range.${preset}`) }}
+            </button>
+          </div>
 
-    <div class="@container page-x space-y-4 py-4 md:py-8">
+          <RangePicker :range="state.range" :resolved="resolved" @apply="applyRange" />
+
+          <label for="monitor-quick-search" class="relative min-w-[14rem] flex-1">
+            <span class="sr-only">{{ t('usage.recordsSearch') }}</span>
+            <UiIcon
+              name="search"
+              :size="14"
+              class="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-gray-500"
+            />
+            <input
+              id="monitor-quick-search"
+              v-model="quickSearch"
+              type="search"
+              :placeholder="t('usage.searchQuickPlaceholder')"
+              class="h-8.5 w-full rounded-xl border border-line bg-canvas pr-3 pl-8 text-xs text-white focus:border-blue-500 focus:outline-none"
+            />
+          </label>
+
+          <div class="flex items-center gap-1.5">
+            <UiSelect
+              v-if="live"
+              :model-value="autoRefresh"
+              :aria-label="t('usage.autoRefresh')"
+              class="h-8.5 w-max rounded-xl border border-line bg-canvas px-2.5 text-xs text-gray-200 hover:border-line-strong"
+              @update:model-value="autoRefresh = Number($event)"
+            >
+              <option v-for="choice in refreshChoices" :key="choice" :value="choice">
+                {{ choice === 0 ? t('usage.autoRefresh.0') : `Auto ${choice}s` }}
+              </option>
+            </UiSelect>
+
+            <div class="flex h-8.5 items-stretch rounded-xl border border-line bg-canvas text-xs">
+              <RefreshButton
+                :loading="loading"
+                :live="live"
+                :updated-at="updatedAt"
+                :latest-at="report?.latest_at"
+                @refresh="refresh"
+              />
+            </div>
+
+            <button
+              v-if="hasFilters"
+              type="button"
+              class="h-8.5 rounded-xl border border-line bg-canvas px-3 text-xs font-medium text-gray-300 hover:border-line-strong hover:text-white"
+              @click="clearFilters"
+            >
+              {{ t('usage.resetFilters') }}
+            </button>
+          </div>
+        </div>
+
+        <div class="flex flex-wrap items-center gap-2">
+          <FilterMenu
+            v-for="dimension in dimensions"
+            :key="dimension"
+            :label="t(`usage.dimension.${dimension}`)"
+            :options="filterOptions(dimension)"
+            :selected="state.filters[dimension] ?? []"
+            :format="(value: string) => dimensionLabel(dimension, value)"
+            :search-label="t('usage.filterSearch')"
+            :empty-label="t('usage.filterNone')"
+            :clear-label="t('usage.filtersClear')"
+            @change="setFilter(dimension, $event)"
+          />
+        </div>
+
+        <div v-if="activeChips.length > 0" class="flex flex-wrap gap-1.5 pt-1">
+          <span
+            v-for="chip in activeChips"
+            :key="`${chip.dimension}:${chip.value}`"
+            class="flex max-w-full items-center gap-1 rounded-full border border-blue-500/40 bg-blue-600/10 py-0.5 pr-1.5 pl-2.5 text-xs text-blue-300"
+          >
+            <span class="shrink-0 opacity-75">{{ t(`usage.dimension.${chip.dimension}`) }}:</span>
+            <span
+              v-tooltip.overflow="dimensionLabel(chip.dimension, chip.value)"
+              class="min-w-0 truncate"
+              >{{ dimensionLabel(chip.dimension, chip.value) }}</span
+            >
+            <button
+              type="button"
+              class="shrink-0 rounded-full p-0.5 hover:bg-blue-500/20"
+              :aria-label="`${t('common.close')} ${dimensionLabel(chip.dimension, chip.value)}`"
+              @click="
+                setFilter(
+                  chip.dimension,
+                  (state.filters[chip.dimension] ?? []).filter((item) => item !== chip.value),
+                )
+              "
+            >
+              <UiIcon name="close" :size="11" />
+            </button>
+          </span>
+        </div>
+      </div>
+
       <div
         v-if="error && status !== 'error'"
-        class="flex items-center gap-3 rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-300"
+        class="flex items-center gap-3 rounded-2xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-400"
         role="alert"
       >
         <UiIcon name="warning" :size="16" />
         <span class="flex-1">{{ error }}</span>
         <button
           type="button"
-          class="rounded-md border border-red-500/40 px-3 py-1 text-xs hover:bg-red-500/10"
+          class="rounded-lg border border-red-500/40 px-3 py-1 text-xs hover:bg-red-500/10"
           @click="load()"
         >
           {{ t('usage.retry') }}
@@ -472,25 +635,25 @@ const statusOptions = computed(() =>
 
       <template v-if="status === 'loading'">
         <div
-          class="grid grid-cols-1 gap-3 @min-[37rem]:grid-cols-2 @min-[56rem]:grid-cols-3 @min-[110rem]:grid-cols-6"
+          class="grid grid-cols-1 gap-3.5 @min-[37rem]:grid-cols-2 @min-[58rem]:grid-cols-4"
           aria-hidden="true"
         >
-          <div v-for="index in 6" :key="index" class="h-32 animate-pulse rounded-lg bg-panel"></div>
+          <div v-for="index in 8" :key="index" class="h-32 animate-pulse rounded-2xl bg-panel"></div>
         </div>
-        <div class="h-80 animate-pulse rounded-lg bg-panel" aria-hidden="true"></div>
+        <div class="h-80 animate-pulse rounded-2xl bg-panel" aria-hidden="true"></div>
         <p class="sr-only" role="status">{{ t('common.loading') }}</p>
       </template>
 
       <div
         v-else-if="status === 'error'"
-        class="flex flex-col items-center gap-3 rounded-lg border border-red-500/40 bg-red-500/5 px-6 py-16 text-center"
+        class="flex flex-col items-center gap-3 rounded-2xl border border-red-500/40 bg-red-500/5 px-6 py-16 text-center"
         role="alert"
       >
         <UiIcon name="warning" :size="28" class="text-red-400" />
-        <p class="text-sm text-red-300">{{ error }}</p>
+        <p class="text-sm text-red-400">{{ error }}</p>
         <button
           type="button"
-          class="rounded-md border border-red-500/40 px-3 py-1 text-xs text-red-200 hover:bg-red-500/10"
+          class="rounded-lg border border-red-500/40 px-3 py-1 text-xs text-red-300 hover:bg-red-500/10"
           @click="load()"
         >
           {{ t('usage.retry') }}
@@ -499,68 +662,163 @@ const statusOptions = computed(() =>
 
       <template v-else-if="report !== null">
         <div class="space-y-4" :aria-busy="loading">
-          <div
-            v-if="report.totals.requests === 0"
-            class="flex flex-col items-center justify-center rounded-lg border border-dashed border-line px-6 py-20 text-center"
-          >
-            <UiIcon name="empty" :size="40" class="mb-3 text-gray-600" />
-            <p class="text-sm font-medium text-gray-300">
-              {{ hasFilters ? t('usage.emptyFiltered') : t('usage.empty') }}
-            </p>
-            <p class="mt-1 max-w-md text-xs text-gray-500">
-              {{ hasFilters ? t('usage.emptyFilteredHelp') : t('usage.emptyHelp') }}
-            </p>
-            <button
-              v-if="hasFilters"
-              type="button"
-              class="mt-4 rounded-md border border-line px-3 py-1.5 text-xs text-gray-300 hover:bg-raised"
-              @click="clearFilters"
-            >
-              {{ t('usage.filtersClear') }}
-            </button>
+          <!-- 8 KPI Cards (2 x 4) -->
+          <div class="grid grid-cols-1 gap-3.5 @min-[37rem]:grid-cols-2 @min-[58rem]:grid-cols-4">
+            <KpiCard
+              v-for="kpi in kpis"
+              :key="kpi.label"
+              :label="kpi.label"
+              :icon="kpi.icon"
+              :icon-bg="kpi.iconBg"
+              :highlight="kpi.highlight"
+              :value="kpi.value"
+              :raw="kpi.raw"
+              :help="kpi.help"
+              :details="kpi.details"
+              :delta="kpi.delta"
+              :spark="kpi.spark"
+              :color="kpi.color"
+              :tone="kpi.tone"
+            />
           </div>
-          <template v-else>
-            <div
-              class="grid grid-cols-1 gap-3 @min-[37rem]:grid-cols-2 @min-[56rem]:grid-cols-3 @min-[110rem]:grid-cols-6"
-            >
-              <KpiCard
-                v-for="kpi in kpis"
-                :key="kpi.label"
-                :label="kpi.label"
-                :icon="kpi.icon"
-                :value="kpi.value"
-                :raw="kpi.raw"
-                :help="kpi.help"
-                :details="kpi.details"
-                :delta="kpi.delta"
-                :spark="kpi.spark"
-                :color="kpi.color"
-                :tone="kpi.tone"
+
+          <!-- Tabbed Monitor Workspace -->
+          <section class="overflow-hidden rounded-2xl border border-line bg-panel shadow-sm">
+            <div class="flex flex-wrap items-center justify-between gap-2 border-b border-line bg-canvas/40 px-4 py-2.5">
+              <div class="flex flex-wrap items-center gap-1.5">
+                <button
+                  type="button"
+                  class="inline-flex items-center gap-2 rounded-xl border px-3 py-1.5 text-xs font-medium transition"
+                  :class="
+                    subTab === 'realtime'
+                      ? 'border-blue-500/30 bg-blue-500/10 text-blue-400 font-semibold'
+                      : 'border-transparent text-gray-400 hover:bg-raised hover:text-white'
+                  "
+                  @click="subTab = 'realtime'"
+                >
+                  {{ t('usage.subRealtime') }}
+                  <span class="rounded-full border border-line bg-panel px-1.5 py-0.2 text-[11px] tabular-nums">
+                    {{ integer(report.totals.requests) }}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  class="inline-flex items-center gap-2 rounded-xl border px-3 py-1.5 text-xs font-medium transition"
+                  :class="
+                    subTab === 'accounts'
+                      ? 'border-blue-500/30 bg-blue-500/10 text-blue-400 font-semibold'
+                      : 'border-transparent text-gray-400 hover:bg-raised hover:text-white'
+                  "
+                  @click="subTab = 'accounts'"
+                >
+                  {{ t('usage.subAccounts') }}
+                  <span class="rounded-full border border-line bg-panel px-1.5 py-0.2 text-[11px] tabular-nums">
+                    {{ report.groups.account.length }}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  class="inline-flex items-center gap-2 rounded-xl border px-3 py-1.5 text-xs font-medium transition"
+                  :class="
+                    subTab === 'cooldowns'
+                      ? 'border-blue-500/30 bg-blue-500/10 text-blue-400 font-semibold'
+                      : 'border-transparent text-gray-400 hover:bg-raised hover:text-white'
+                  "
+                  @click="subTab = 'cooldowns'"
+                >
+                  {{ t('usage.subCooldowns') }}
+                  <span
+                    class="rounded-full border px-1.5 py-0.2 text-[11px] tabular-nums"
+                    :class="
+                      liveAndCooldownCount > 0
+                        ? 'border-amber-500/40 bg-amber-500/10 text-amber-400'
+                        : 'border-line bg-panel text-gray-400'
+                    "
+                  >
+                    {{ liveAndCooldownCount }}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  class="inline-flex items-center gap-2 rounded-xl border px-3 py-1.5 text-xs font-medium transition"
+                  :class="
+                    subTab === 'charts'
+                      ? 'border-blue-500/30 bg-blue-500/10 text-blue-400 font-semibold'
+                      : 'border-transparent text-gray-400 hover:bg-raised hover:text-white'
+                  "
+                  @click="subTab = 'charts'"
+                >
+                  {{ t('usage.subCharts') }}
+                </button>
+              </div>
+            </div>
+
+            <div v-if="subTab === 'realtime'">
+              <RecordsTable
+                embedded
+                :scope="scope"
+                :base-query="baseQuery"
+                :status="state.status"
+                :search="state.search"
+                :total="report.totals.requests"
+                :status-options="statusOptions"
+                :refresh-key="recordsRefresh"
+                :only-failed="onlyFailed"
+                @update:status="state.status = $event"
+                @update:search="state.search = $event"
+                @update:only-failed="onlyFailed = $event"
               />
             </div>
-            <UsageCharts
-              :report="report"
-              :stack="state.stack"
-              @update:stack="state.stack = $event"
-            />
-            <RankingTable
-              :report="report"
-              :load-pairs="loadPairs"
-              @filter="addFilter"
-              @status="state.status = $event"
-            />
-            <RecordsTable
-              :scope="scope"
-              :base-query="baseQuery"
-              :status="state.status"
-              :search="state.search"
-              :total="report.totals.requests"
-              :status-options="statusOptions"
-              :refresh-key="recordsRefresh"
-              @update:status="state.status = $event"
-              @update:search="state.search = $event"
-            />
-          </template>
+
+            <div v-else-if="subTab === 'accounts'" class="p-4">
+              <div
+                v-if="report.totals.requests === 0"
+                class="flex flex-col items-center justify-center py-14 text-center"
+              >
+                <UiIcon name="empty" :size="32" class="mb-2 text-gray-600" />
+                <p class="text-sm text-gray-400">{{ hasFilters ? t('usage.emptyFiltered') : t('usage.empty') }}</p>
+              </div>
+              <RankingTable
+                v-else
+                :report="report"
+                :load-pairs="loadPairs"
+                @filter="addFilter"
+                @status="state.status = $event"
+              />
+            </div>
+
+            <div v-else-if="subTab === 'cooldowns'">
+              <RequestsPanel
+                :accounts="accounts"
+                :cooldowns="cooldowns"
+                :requests="requests"
+                :loading="requestsLoading"
+                :cooldown-error="cooldownError"
+                :request-error="requestError"
+                @refresh="emit('refreshRequests')"
+                @notice="(msg, tone) => emit('notice', msg, tone)"
+              />
+            </div>
+
+            <div v-else-if="subTab === 'charts'" class="p-4">
+              <div
+                v-if="report.totals.requests === 0"
+                class="flex flex-col items-center justify-center py-14 text-center"
+              >
+                <UiIcon name="empty" :size="32" class="mb-2 text-gray-600" />
+                <p class="text-sm text-gray-400">{{ hasFilters ? t('usage.emptyFiltered') : t('usage.empty') }}</p>
+              </div>
+              <UsageCharts
+                v-else
+                :report="report"
+                :stack="state.stack"
+                @update:stack="state.stack = $event"
+              />
+            </div>
+          </section>
         </div>
       </template>
     </div>

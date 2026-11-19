@@ -353,6 +353,7 @@ func (request *chatRequest) mergeLegacyFunctions() error {
 
 func (request chatRequest) toGenerateRequest(id string) (aistudio.GenerateRequest, error) {
 	var system []string
+	var reminders []aistudio.Part
 	contents := make([]aistudio.Content, 0, len(request.Messages))
 	for _, message := range request.Messages {
 		if message.Role == "system" || message.Role == "developer" {
@@ -364,7 +365,11 @@ func (request chatRequest) toGenerateRequest(id string) (aistudio.GenerateReques
 				text = message.Name + ": " + text
 			}
 			if text != "" {
-				system = append(system, text)
+				if len(contents) == 0 {
+					system = append(system, text)
+				} else {
+					reminders = addSystemReminder(contents, reminders, text)
+				}
 			}
 			continue
 		}
@@ -375,7 +380,10 @@ func (request chatRequest) toGenerateRequest(id string) (aistudio.GenerateReques
 		if len(content.Parts) == 0 {
 			continue
 		}
-		contents = append(contents, content)
+		contents, reminders = appendWithReminders(contents, content, reminders)
+	}
+	if len(reminders) > 0 {
+		contents = append(contents, aistudio.Content{Role: aistudio.RoleUser, Parts: reminders})
 	}
 	tools, err := mapOpenAITools(request.Tools, request.ToolChoice)
 	if err != nil {

@@ -189,3 +189,23 @@ func TestStrictQuotaFreezeAndTestBypass(t *testing.T) {
 	}
 	_ = leaseAfter.Release()
 }
+
+func TestSmartTrackerCustomSessionTTL(t *testing.T) {
+	tracker := newSmartTracker()
+	if tracker.effectiveSessionTTL() != 60*time.Minute {
+		t.Fatalf("default ttl = %v, want 60m", tracker.effectiveSessionTTL())
+	}
+	tracker.sessionTTL = 2 * time.Hour
+	base := time.Date(2026, 11, 19, 10, 0, 0, 0, time.UTC)
+	tracker.recordDispatch("a@example.com", "sess-1", base)
+
+	// 90 分钟后仍处于 2h 粘性窗口内
+	if got := tracker.stickyAccount("sess-1", base.Add(90*time.Minute)); got != "a@example.com" {
+		t.Fatalf("sticky at +90m = %q, want a@example.com", got)
+	}
+	// 超过 2 小时后失效
+	if got := tracker.stickyAccount("sess-1", base.Add(2*time.Hour)); got != "" {
+		t.Fatalf("sticky at +2h = %q, want empty", got)
+	}
+}
+

@@ -345,6 +345,7 @@ type RuntimeConfig struct {
 	RoutingStrategy           string               `json:"routing_strategy"`
 	SmartSoftRPM              int                  `json:"smart_soft_rpm"`
 	SmartHardRPM              int                  `json:"smart_hard_rpm"`
+	SmartSessionTTL           string               `json:"smart_session_ttl"`
 	QuotaAutoFreeze           bool                 `json:"quota_auto_freeze"`
 	AccountOrder              string               `json:"account_order"`
 	AccountTestModels         string               `json:"account_test_models"`

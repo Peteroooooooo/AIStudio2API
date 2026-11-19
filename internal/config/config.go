@@ -44,6 +44,7 @@ var configKeys = [...]string{
 	"ROUTING_STRATEGY",
 	"SMART_SOFT_RPM",
 	"SMART_HARD_RPM",
+	"SMART_SESSION_TTL",
 	"QUOTA_AUTO_FREEZE",
 	"ACCOUNT_ORDER",
 	"ACCOUNT_TEST_MODELS",
@@ -107,6 +108,9 @@ const DefaultSmartSoftRPM = 8
 // DefaultSmartHardRPM 是智能路由单账户 60 秒硬保护请求数上限的默认值
 const DefaultSmartHardRPM = 9
 
+// DefaultSmartSessionTTL 是智能路由会话粘性保持时长的默认值
+const DefaultSmartSessionTTL = 60 * time.Minute
+
 // DefaultQuotaAutoFreeze 是触发每日或套餐限额时是否严格冻结到恢复时间
 const DefaultQuotaAutoFreeze = true
 
@@ -159,6 +163,7 @@ type Config struct {
 	RoutingStrategy        string
 	SmartSoftRPM           int
 	SmartHardRPM           int
+	SmartSessionTTL        time.Duration
 	QuotaAutoFreeze        bool
 	AccountOrder           string
 	AccountTestModels      string // 账户页测试下拉框按顺序列出的模型 ID，逗号分隔，第一个为默认测试模型；为空时自动选模型
@@ -212,6 +217,7 @@ func Default() Config {
 		RoutingStrategy:        "round-robin",
 		SmartSoftRPM:           DefaultSmartSoftRPM,
 		SmartHardRPM:           DefaultSmartHardRPM,
+		SmartSessionTTL:        DefaultSmartSessionTTL,
 		QuotaAutoFreeze:        DefaultQuotaAutoFreeze,
 		MaxAccountSwitches:     DefaultMaxAccountSwitches,
 		UpstreamChannels:       []string{"playground"},
@@ -275,6 +281,7 @@ var configSetters = map[string]func(*Config, string) error{
 	"ROUTING_STRATEGY":         textSetter(func(c *Config) *string { return &c.RoutingStrategy }, strings.TrimSpace),
 	"SMART_SOFT_RPM":           nonNegativeIntSetter("SMART_SOFT_RPM", func(c *Config) *int { return &c.SmartSoftRPM }),
 	"SMART_HARD_RPM":           nonNegativeIntSetter("SMART_HARD_RPM", func(c *Config) *int { return &c.SmartHardRPM }),
+	"SMART_SESSION_TTL":        durationSetter("SMART_SESSION_TTL", func(c *Config) *time.Duration { return &c.SmartSessionTTL }),
 	"QUOTA_AUTO_FREEZE":        boolSetter("QUOTA_AUTO_FREEZE", func(c *Config) *bool { return &c.QuotaAutoFreeze }),
 	"ACCOUNT_ORDER":            textSetter(func(c *Config) *string { return &c.AccountOrder }, strings.TrimSpace),
 	"ACCOUNT_TEST_MODELS":      textSetter(func(c *Config) *string { return &c.AccountTestModels }, strings.TrimSpace),
@@ -446,6 +453,12 @@ var configChecks = []configCheck{
 		}
 		if c.SmartHardRPM > 0 && c.SmartSoftRPM > c.SmartHardRPM {
 			return fmt.Errorf("SMART_SOFT_RPM 不能大于 SMART_HARD_RPM")
+		}
+		return nil
+	}},
+	{[]string{"SMART_SESSION_TTL"}, func(c Config) error {
+		if c.SmartSessionTTL <= 0 {
+			return fmt.Errorf("SMART_SESSION_TTL 必须是正时长")
 		}
 		return nil
 	}},
@@ -672,6 +685,7 @@ func (c Config) envValues() map[string]string {
 		"ROUTING_STRATEGY":         c.RoutingStrategy,
 		"SMART_SOFT_RPM":           strconv.Itoa(c.SmartSoftRPM),
 		"SMART_HARD_RPM":           strconv.Itoa(c.SmartHardRPM),
+		"SMART_SESSION_TTL":        c.SmartSessionTTL.String(),
 		"QUOTA_AUTO_FREEZE":        strconv.FormatBool(c.QuotaAutoFreeze),
 		"ACCOUNT_ORDER":            c.AccountOrder,
 		"ACCOUNT_TEST_MODELS":      c.AccountTestModels,

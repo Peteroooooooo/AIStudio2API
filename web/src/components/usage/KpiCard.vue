@@ -16,9 +16,10 @@ const props = defineProps<{
   spark: number[]
   color: string
   tone?: string | undefined
+  iconBg?: string | undefined
+  highlight?: boolean | undefined
 }>()
 
-// sparkPath 把序列归一化为 100×28 的折线路径
 const sparkPath = computed(() => {
   const values = props.spark
   if (values.length < 2) return ''
@@ -28,11 +29,12 @@ const sparkPath = computed(() => {
   return values
     .map((value, index) => {
       const x = (index / (values.length - 1)) * 100
-      const y = 26 - ((value - low) / span) * 24
+      const y = 26 - ((value - low) / span) * 22
       return `${index === 0 ? 'M' : 'L'}${x.toFixed(2)},${y.toFixed(2)}`
     })
     .join(' ')
 })
+
 const deltaClass = computed(() => {
   if (props.delta === undefined) return ''
   return { good: 'text-green-400', bad: 'text-red-400', neutral: 'text-gray-500' }[props.delta.tone]
@@ -40,44 +42,61 @@ const deltaClass = computed(() => {
 </script>
 
 <template>
-  <article class="flex min-w-0 flex-col rounded-lg border border-line bg-panel p-4">
-    <div class="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-gray-500">
-      <span class="flex min-w-0 items-center gap-2">
-        <UiIcon :name="icon" :size="14" class="shrink-0" />
-        <span
-          v-tooltip="help"
-          class="cursor-help underline decoration-gray-700 decoration-dotted underline-offset-4"
-          >{{ label }}</span
-        >
+  <article
+    class="group relative flex min-w-0 flex-col overflow-hidden rounded-2xl border p-4 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md"
+    :class="
+      highlight
+        ? 'border-teal-400/50 bg-gradient-to-b from-panel to-teal-500/[0.06]'
+        : 'border-line bg-panel'
+    "
+  >
+    <div class="flex items-center gap-2 text-xs text-gray-500">
+      <span
+        class="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg"
+        :class="iconBg ?? 'bg-blue-500/10 text-blue-400'"
+      >
+        <UiIcon :name="icon" :size="14" />
       </span>
+      <span
+        v-tooltip="help"
+        class="min-w-0 truncate cursor-help font-medium"
+        :class="highlight ? 'text-cyan-400' : 'text-gray-400'"
+        >{{ label }}</span
+      >
       <span
         v-if="delta"
         v-tooltip="delta.help"
-        class="ml-auto flex shrink-0 items-center tabular-nums"
+        class="ml-auto flex shrink-0 items-center text-[11px] font-medium tabular-nums"
         :class="deltaClass"
       >
-        <UiIcon :name="delta.direction" :size="12" />{{ delta.text }}
+        <UiIcon :name="delta.direction" :size="11" />{{ delta.text }}
         <span class="sr-only">{{ delta.help }}</span>
       </span>
     </div>
+
     <data
       v-tooltip.overflow="value"
       :value="raw ?? ''"
-      class="mt-2 block truncate text-2xl font-semibold tracking-tight tabular-nums"
+      class="relative z-10 mt-2.5 block truncate text-[26px] leading-tight font-bold tracking-tight tabular-nums"
       :class="tone ?? 'text-white'"
       >{{ value }}</data
     >
-    <p class="mt-1 text-xs text-gray-500">
+
+    <p class="relative z-10 mt-1.5 text-xs text-gray-500">
       <template v-for="(detail, index) in details" :key="detail.label">
         <span v-if="index > 0" aria-hidden="true"> · </span>{{ detail.label }}
-        <span v-if="detail.value" class="tabular-nums" :class="detail.tone ?? 'text-gray-300'">{{
-          detail.value
-        }}</span>
+        <span
+          v-if="detail.value"
+          class="font-medium tabular-nums"
+          :class="detail.tone ?? 'text-gray-300'"
+          >{{ detail.value }}</span
+        >
       </template>
     </p>
+
     <svg
       v-if="sparkPath"
-      class="mt-auto h-7 w-full pt-2"
+      class="pointer-events-none absolute right-2.5 bottom-2 h-9 w-28 opacity-75"
       viewBox="0 0 100 28"
       preserveAspectRatio="none"
       aria-hidden="true"
@@ -86,7 +105,9 @@ const deltaClass = computed(() => {
         :d="sparkPath"
         fill="none"
         :stroke="color"
-        stroke-width="1.5"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
         vector-effect="non-scaling-stroke"
       />
     </svg>

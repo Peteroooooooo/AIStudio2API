@@ -11,16 +11,17 @@ import (
 
 const (
 	smartRPMWindow        = time.Minute
-	smartSessionTTL       = 15 * time.Minute
+	smartSessionTTL       = 60 * time.Minute
 	smartMaxSessions      = 2048
 	smartPenaltyHalfLife  = 15.0 // minutes
 	smartRejectionHoldDur = 30 * time.Second
 )
 
-// SmartConfig 控制智能路由（ROUTING_STRATEGY=smart）的限频、健康与自动冻结参数
+// SmartConfig 控制智能路由（ROUTING_STRATEGY=smart）的限频、会话粘性与自动冻结参数
 type SmartConfig struct {
 	SoftRPM         int
 	HardRPM         int
+	SessionTTL      time.Duration
 	QuotaAutoFreeze bool
 }
 
@@ -43,6 +44,7 @@ type smartSessionAffinity struct {
 type smartTracker struct {
 	softRPM         int
 	hardRPM         int
+	sessionTTL      time.Duration
 	quotaAutoFreeze bool
 	accounts        map[string]*smartAccountState
 	sessions        map[string]smartSessionAffinity
@@ -52,10 +54,18 @@ func newSmartTracker() *smartTracker {
 	return &smartTracker{
 		softRPM:         8,
 		hardRPM:         9,
+		sessionTTL:      smartSessionTTL,
 		quotaAutoFreeze: true,
 		accounts:        make(map[string]*smartAccountState),
 		sessions:        make(map[string]smartSessionAffinity),
 	}
+}
+
+func (t *smartTracker) effectiveSessionTTL() time.Duration {
+	if t.sessionTTL > 0 {
+		return t.sessionTTL
+	}
+	return smartSessionTTL
 }
 
 func (t *smartTracker) accountState(accountID string, now time.Time) *smartAccountState {
@@ -139,7 +149,7 @@ func (t *smartTracker) setSession(sessionKey string, accountID string, now time.
 	}
 	t.sessions[sessionKey] = smartSessionAffinity{
 		accountID: accountID,
-		expiresAt: now.Add(smartSessionTTL),
+		expiresAt: now.Add(t.effectiveSessionTTL()),
 	}
 }
 
@@ -253,6 +263,9 @@ func (p *AccountPool) SetSmartConfig(cfg SmartConfig) {
 	}
 	p.smart.softRPM = max(cfg.SoftRPM, 0)
 	p.smart.hardRPM = max(cfg.HardRPM, 0)
+	if cfg.SessionTTL > 0 {
+		p.smart.sessionTTL = cfg.SessionTTL
+	}
 	p.smart.quotaAutoFreeze = cfg.QuotaAutoFreeze
 	p.notifyLocked()
 }

@@ -81,6 +81,7 @@ const sections: {
       'routing_strategy',
       'smart_soft_rpm',
       'smart_hard_rpm',
+      'smart_session_ttl',
       'quota_auto_freeze',
       'account_order',
       'account_test_models',
@@ -806,6 +807,21 @@ async function saveConfig(): Promise<void> {
                 :class="inputClass"
                 type="number"
                 min="0"
+              />
+            </SettingRow>
+            <SettingRow
+              v-if="form.routing_strategy === 'smart'"
+              :label="t('settings.smartSessionTTL')"
+              control-id="setting-smart-session-ttl"
+              :description="t('settings.smartSessionTTLHelp')"
+              effect="immediate"
+              :changed="changedFields.has('smart_session_ttl')"
+              :env="environmentKey('smart_session_ttl')"
+            >
+              <DurationInput
+                id="setting-smart-session-ttl"
+                v-model="form.smart_session_ttl"
+                :input-class="inputClass"
               />
             </SettingRow>
             <SettingRow

@@ -78,6 +78,7 @@ func TestAdminConfig(t *testing.T) {
 	value.RoutingStrategy = "smart"
 	value.SmartSoftRPM = 7
 	value.SmartHardRPM = 9
+	value.SmartSessionTTL = "2h"
 	value.QuotaAutoFreeze = true
 	value.MaxAccountSwitches = 8
 	updated, err := admin.UpdateRuntimeConfig(ctx, value)

@@ -118,3 +118,47 @@ func TestOpenAIToolMessageNameInference(t *testing.T) {
 		t.Fatalf("unexpected function result: %#v", result)
 	}
 }
+
+// TestOpenAIMidConversationSystemPreservesSystemPrefix 验证对话中途的 system/developer 消息保留在 contents 原位置，不改写开头的 systemInstruction
+func TestOpenAIMidConversationSystemPreservesSystemPrefix(t *testing.T) {
+	req := chatRequest{
+		Model: "gemini-4-hydrogen",
+		Messages: []chatMessage{
+			{Role: "system", Content: json.RawMessage(`"static prompt 1"`)},
+			{Role: "developer", Content: json.RawMessage(`"static prompt 2"`)},
+			{Role: "user", Content: json.RawMessage(`"turn 1"`)},
+			{Role: "assistant", Content: json.RawMessage(`"reply 1"`), ToolCalls: []openAIToolCall{{
+				ID:   "call_1",
+				Type: "function",
+				Function: struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				}{Name: "read_file", Arguments: `{"path":"a.txt"}`},
+			}}},
+			{Role: "tool", ToolCallID: "call_1", Name: "read_file", Content: json.RawMessage(`"file ok"`)},
+			{Role: "system", Content: json.RawMessage(`"<total_tokens>100</total_tokens>"`)},
+			{Role: "user", Content: json.RawMessage(`"turn 2"`)},
+			{Role: "assistant", Content: json.RawMessage(`"reply 2"`)},
+			{Role: "system", Content: json.RawMessage(`"<total_tokens>90</total_tokens>"`)},
+		},
+	}
+	genReq, err := req.toGenerateRequest("test-id")
+	if err != nil {
+		t.Fatalf("toGenerateRequest failed: %v", err)
+	}
+	if len(genReq.System) != 1 || genReq.System[0] != "static prompt 1\nstatic prompt 2" {
+		t.Fatalf("unexpected system instruction: %#v", genReq.System)
+	}
+	if len(genReq.Contents) != 6 {
+		t.Fatalf("expected 6 contents, got %d: %#v", len(genReq.Contents), genReq.Contents)
+	}
+	if genReq.Contents[2].Role != aistudio.RoleTool || len(genReq.Contents[2].Parts) != 2 ||
+		genReq.Contents[2].Parts[0].FunctionResult == nil ||
+		genReq.Contents[2].Parts[1].Text != "<system-reminder>\n<total_tokens>100</total_tokens>\n</system-reminder>" {
+		t.Fatalf("mid-conversation system after tool should attach to tool turn: %#v", genReq.Contents[2])
+	}
+	if genReq.Contents[5].Role != aistudio.RoleUser || len(genReq.Contents[5].Parts) != 1 ||
+		genReq.Contents[5].Parts[0].Text != "<system-reminder>\n<total_tokens>90</total_tokens>\n</system-reminder>" {
+		t.Fatalf("trailing system after assistant should become trailing user turn: %#v", genReq.Contents[5])
+	}
+}

@@ -19,6 +19,7 @@ import {
   Columns3,
   Cookie,
   Copy,
+  Database,
   Download,
   Folder,
   Gauge,
@@ -161,6 +162,7 @@ export const icons = {
   arrowUp: ArrowUp,
   grip: GripVertical,
   boxes: Boxes,
+  cached: Database,
 } as const
 
 // IconName 是界面可用的图标语义名

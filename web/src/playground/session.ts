@@ -117,7 +117,13 @@ function defaultImageSize(model: Model | undefined): string {
   return sizes.includes('1K') ? '1K' : (sizes[0] ?? '')
 }
 
-// defaultSettings 返回新对话的运行设置：模型默认参数、安全设置全部关闭，agent 之外的模型工具全部关闭
+// defaultTools 返回新对话的默认启用工具：agent 按目录默认工具，普通对话模型支持 Google 搜索时默认开启
+function defaultTools(model: Model | undefined): Tool[] {
+  if (isAgent(model)) return agentTools(model!)
+  return hasCode(model, Capability.GoogleSearch) ? ['google_search'] : []
+}
+
+// defaultSettings 返回新对话的运行设置：模型默认参数、安全设置全部关闭，支持搜索的模型默认开启 Google 搜索
 export function defaultSettings(model: Model | undefined): RunSettings {
   return {
     model: '',
@@ -135,7 +141,7 @@ export function defaultSettings(model: Model | undefined): RunSettings {
     safety: Object.fromEntries(
       safetyCategories.map((category) => [category, 'OFF']),
     ) as RunSettings['safety'],
-    tools: [],
+    tools: defaultTools(model),
     responseSchema: '',
     functionDeclarations: '',
     imageOutput: 'IMAGE_TEXT',

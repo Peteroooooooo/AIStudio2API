@@ -13,7 +13,7 @@ import { readPreference, writePreference } from '@/preference'
 import { rateTone, successRate } from './model'
 
 type Tab = UsageDimension | 'status'
-type SortKey = 'key' | 'requests' | 'rate' | 'tokens' | 'p50' | 'p95' | 'first' | 'last'
+type SortKey = 'key' | 'requests' | 'rate' | 'cached' | 'tokens' | 'p50' | 'p95' | 'first' | 'last'
 
 type Breakdown = 'account' | 'model'
 type Pairs = UsageReport['pairs']
@@ -48,12 +48,17 @@ const columns: { key: SortKey; label: () => string; numeric: boolean }[] = [
   { key: 'key', label: () => t(`usage.dimension.${tab.value}`), numeric: false },
   { key: 'requests', label: () => t('usage.requests'), numeric: true },
   { key: 'rate', label: () => t('usage.successRate'), numeric: true },
+  { key: 'cached', label: () => t('usage.cached'), numeric: true },
   { key: 'tokens', label: () => t('usage.tokens'), numeric: true },
   { key: 'p50', label: () => `${t('usage.duration')} P50`, numeric: true },
   { key: 'p95', label: () => `${t('usage.duration')} P95`, numeric: true },
   { key: 'first', label: () => `${t('usage.firstEvent')} P95`, numeric: true },
   { key: 'last', label: () => t('usage.lastRequest'), numeric: true },
 ]
+
+function cacheRate(stats: UsageStats): number | null {
+  return stats.input_tokens > 0 ? stats.cached_tokens / stats.input_tokens : null
+}
 
 // sortValue 返回行在排序列上的比较值
 function sortValue(key: string, stats: UsageStats, column: SortKey): number | string {
@@ -64,6 +69,8 @@ function sortValue(key: string, stats: UsageStats, column: SortKey): number | st
       return stats.requests
     case 'rate':
       return successRate(stats) ?? -1
+    case 'cached':
+      return cacheRate(stats) ?? -1
     case 'tokens':
       return stats.total_tokens
     case 'p50':
@@ -176,10 +183,16 @@ function applyFilter(key: string): void {
 const total = computed(() => props.report.totals.requests)
 
 // childCells 是组合明细行在各数值列中的文字与颜色，最后请求列由 UsageAgo 显示相对时间
-function childCells(stats: UsageStats): { key: string; text: string; tone?: string }[] {
+function childCells(stats: UsageStats): { key: string; text: string; tone?: string | undefined }[] {
+  const cr = cacheRate(stats)
   return [
     { key: 'requests', text: integer(stats.requests) },
     { key: 'rate', text: percent(successRate(stats)), tone: rateTone(successRate(stats)) },
+    {
+      key: 'cached',
+      text: cr !== null ? `${compact(stats.cached_tokens)} (${percent(cr)})` : '—',
+      ...(cr !== null && cr >= 0.5 ? { tone: 'text-cyan-400' } : {}),
+    },
     { key: 'tokens', text: compact(stats.total_tokens) },
     { key: 'p50', text: duration(stats.duration.p50_ms) },
     { key: 'p95', text: duration(stats.duration.p95_ms) },
@@ -295,6 +308,15 @@ function childCells(stats: UsageStats): { key: string; text: string; tone?: stri
               <td class="px-2 py-2 text-right tabular-nums" :class="rateTone(successRate(row))">
                 {{ percent(successRate(row)) }}
               </td>
+              <td class="px-2 py-2 text-right tabular-nums">
+                <span
+                  v-if="cacheRate(row) !== null"
+                  class="rounded-full border border-teal-500/30 bg-teal-500/10 px-2 py-0.5 text-[11px] font-semibold text-cyan-400"
+                >
+                  {{ compact(row.cached_tokens) }} · {{ percent(cacheRate(row)) }}
+                </span>
+                <span v-else class="text-gray-500">—</span>
+              </td>
               <td class="px-2 py-2 text-right tabular-nums">{{ compact(row.total_tokens) }}</td>
               <td class="px-2 py-2 text-right tabular-nums">{{ duration(row.duration.p50_ms) }}</td>
               <td class="px-2 py-2 text-right tabular-nums">{{ duration(row.duration.p95_ms) }}</td>
@@ -318,7 +340,7 @@ function childCells(stats: UsageStats): { key: string; text: string; tone?: stri
             </tr>
             <template v-if="details.has(row.key)">
               <tr v-if="details.get(row.key)!.note !== null" class="bg-canvas/60 text-gray-500">
-                <td colspan="9" class="p-0">
+                <td colspan="10" class="p-0">
                   <UiCollapse :open="expanded.has(row.key)" @closed="hideRow(row.key)">
                     <div class="py-1.5 pr-4 pl-11">{{ details.get(row.key)!.note }}</div>
                   </UiCollapse>

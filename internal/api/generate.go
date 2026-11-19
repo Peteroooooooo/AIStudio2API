@@ -210,19 +210,19 @@ func providerFinishReason(reason string) string {
 	return ""
 }
 
-// addSystemReminder 把对话中途的系统消息以 system-reminder 追加到上一个 user 轮，上一轮不是 user 时返回待并入下一个 user 轮的 reminder
+// addSystemReminder 把对话中途的系统消息以 system-reminder 追加到上一个 user/tool 轮，上一轮不是 user/tool 时返回待并入下一个 user/tool 轮的 reminder
 func addSystemReminder(contents []aistudio.Content, pending []aistudio.Part, text string) []aistudio.Part {
 	reminder := aistudio.Part{Text: "<system-reminder>\n" + text + "\n</system-reminder>"}
-	if last := len(contents) - 1; last >= 0 && contents[last].Role == aistudio.RoleUser {
+	if last := len(contents) - 1; last >= 0 && (contents[last].Role == aistudio.RoleUser || contents[last].Role == aistudio.RoleTool) {
 		contents[last].Parts = append(contents[last].Parts, reminder)
 		return pending
 	}
 	return append(pending, reminder)
 }
 
-// appendWithReminders 追加一条消息，待并入的 reminder 排在下一个 user 消息的函数结果之后
+// appendWithReminders 追加一条消息，待并入的 reminder 排在下一个 user/tool 消息的函数结果之后
 func appendWithReminders(contents []aistudio.Content, content aistudio.Content, reminders []aistudio.Part) ([]aistudio.Content, []aistudio.Part) {
-	if content.Role == aistudio.RoleUser && len(reminders) > 0 {
+	if (content.Role == aistudio.RoleUser || content.Role == aistudio.RoleTool) && len(reminders) > 0 {
 		results := 0
 		for index, part := range content.Parts {
 			if part.FunctionResult != nil {

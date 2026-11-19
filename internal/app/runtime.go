@@ -68,6 +68,7 @@ func newRuntime(
 	pool.SetSmartConfig(aistudio.SmartConfig{
 		SoftRPM:         cfg.SmartSoftRPM,
 		HardRPM:         cfg.SmartHardRPM,
+		SessionTTL:      cfg.SmartSessionTTL,
 		QuotaAutoFreeze: cfg.QuotaAutoFreeze,
 	})
 	pool.SetAccountOrder(accountOrder(cfg.AccountOrder))
