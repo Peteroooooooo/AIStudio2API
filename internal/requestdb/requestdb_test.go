@@ -65,3 +65,35 @@ func TestLedgerUsageAndBodies(t *testing.T) {
 		t.Fatalf("body=%+v err=%v", body, err)
 	}
 }
+
+func TestRecordFirstOutputRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "requests.db")
+	logs := func(level, message string, attrs ...any) { t.Errorf("%s %s %v", level, message, attrs) }
+	store, err := Open(path, logs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	store.Record(Row{
+		ID: "r1", Time: now.Add(-time.Minute), Model: "flash", State: "completed",
+		Duration: 5 * time.Second, FirstEvent: time.Second, FirstOutput: 120,
+		ReasoningTokens: 100, ReplyTokens: 400, TotalTokens: 500,
+	})
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = Open(path, logs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	page, err := store.Records(context.Background(), api.UsageRecordQuery{
+		From: now.Add(-time.Hour), To: now.Add(time.Minute), Limit: 10,
+	})
+	if err != nil || len(page.Items) != 1 {
+		t.Fatalf("records=%+v err=%v", page, err)
+	}
+	if page.Items[0].FirstOutput != 120 {
+		t.Fatalf("first_output=%d want 120", page.Items[0].FirstOutput)
+	}
+}

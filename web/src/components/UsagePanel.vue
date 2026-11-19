@@ -245,6 +245,15 @@ function addFilter(dimension: UsageDimension, value: string): void {
   if (!values.includes(value)) setFilter(dimension, [...values, value])
 }
 
+function addFilterPair(account: string, model: string): void {
+  const filters = { ...state.filters }
+  const accounts = filters.account ?? []
+  const models = filters.model ?? []
+  if (!accounts.includes(account)) filters.account = [...accounts, account]
+  if (!models.includes(model)) filters.model = [...models, model]
+  state.filters = filters
+}
+
 function clearFilters(): void {
   state.filters = {}
   state.status = ''
@@ -785,7 +794,10 @@ const liveAndCooldownCount = computed(() => props.requests.length + props.cooldo
                 v-else
                 :report="report"
                 :load-pairs="loadPairs"
+                :accounts="accounts"
+                :cooldowns="cooldowns"
                 @filter="addFilter"
+                @filter-pair="addFilterPair"
                 @status="state.status = $event"
               />
             </div>

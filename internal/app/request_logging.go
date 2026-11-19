@@ -100,7 +100,7 @@ func requestRow(entry api.AccessLog, finished time.Time) requestdb.Row {
 	row := requestdb.Row{
 		ID: entry.RequestID, Time: finished, Protocol: requestProtocol(entry.Path), Path: entry.Path,
 		Model: entry.Model, Account: entry.Account, Channel: entry.Channel, Status: entry.Status, State: data.State,
-		Duration: entry.Latency, FirstEvent: entry.FirstEvent, Queue: entry.QueueWait, ToolCalls: entry.ToolCalls, Error: cmp.Or(data.Error, entry.TrailingError),
+		Duration: entry.Latency, FirstEvent: entry.FirstEvent, FirstOutput: entry.FirstOutput, Queue: entry.QueueWait, ToolCalls: entry.ToolCalls, Error: cmp.Or(data.Error, entry.TrailingError),
 		Attempts: entry.Attempts,
 	}
 	if usage := data.Usage; usage != nil {

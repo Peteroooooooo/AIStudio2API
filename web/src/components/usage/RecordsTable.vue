@@ -115,8 +115,14 @@ function cacheHitPct(record: UsageRecord): string {
 function recordTps(record: UsageRecord): string {
   const out = record.reasoning_tokens + record.reply_tokens
   if (out <= 0 || record.duration_ms <= 0) return '—'
-  const genMs = Math.max(200, record.duration_ms - Math.max(0, record.first_event_ms))
-  return String(Math.round(out / (genMs / 1000)))
+  if (record.first_output !== undefined && record.first_output >= 0) {
+    const streamTokens = out - record.first_output
+    const genMs = record.duration_ms - Math.max(0, record.first_event_ms)
+    if (record.first_event_ms <= 0 || streamTokens <= 0 || genMs < 200) return '—'
+    return String(Math.round(streamTokens / (genMs / 1000)))
+  }
+  const execMs = Math.max(200, record.duration_ms - Math.max(0, record.queue_ms))
+  return String(Math.round(out / (execMs / 1000)))
 }
 
 function parameters(cursor?: string): URLSearchParams | null {

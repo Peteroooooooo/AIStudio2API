@@ -205,6 +205,7 @@ type UsageRecord struct {
 	State           string           `json:"state"`
 	DurationMS      int64            `json:"duration_ms"`
 	FirstEventMS    int64            `json:"first_event_ms"`
+	FirstOutput     int64            `json:"first_output"`
 	QueueMS         int64            `json:"queue_ms"`
 	InputTokens     int64            `json:"input_tokens"`
 	CachedTokens    int64            `json:"cached_tokens"`

@@ -555,6 +555,7 @@ export interface UsageRecord {
   state: string
   duration_ms: number
   first_event_ms: number
+  first_output?: number
   queue_ms: number
   input_tokens: number
   cached_tokens: number

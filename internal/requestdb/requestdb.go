@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS requests (
  duration_ms INTEGER NOT NULL, first_event_ms INTEGER NOT NULL, queue_ms INTEGER NOT NULL,
  input_tokens INTEGER NOT NULL, reasoning_tokens INTEGER NOT NULL, reply_tokens INTEGER NOT NULL,
  total_tokens INTEGER NOT NULL, tool_calls INTEGER NOT NULL, error TEXT NOT NULL, attempts TEXT NOT NULL,
- cached_tokens INTEGER NOT NULL DEFAULT 0);
+ cached_tokens INTEGER NOT NULL DEFAULT 0, first_output INTEGER NOT NULL DEFAULT -1);
 CREATE INDEX IF NOT EXISTS requests_time ON requests(time);
 CREATE INDEX IF NOT EXISTS requests_cost ON requests(time, model, input_tokens, cached_tokens, reasoning_tokens, reply_tokens);
 CREATE INDEX IF NOT EXISTS requests_model_time ON requests(model, time);
@@ -76,6 +76,7 @@ type Row struct {
 	State           string
 	Duration        time.Duration
 	FirstEvent      time.Duration
+	FirstOutput     int64
 	Queue           time.Duration
 	InputTokens     int64
 	CachedTokens    int64
@@ -277,11 +278,15 @@ func (store *Store) write(batch []write) (err error) {
 			if err != nil {
 				return err
 			}
-			result, err := tx.Exec(`INSERT OR IGNORE INTO requests VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			result, err := tx.Exec(`INSERT OR IGNORE INTO requests (
+				id, time, protocol, path, model, account, channel, status, state,
+				duration_ms, first_event_ms, queue_ms, input_tokens, reasoning_tokens, reply_tokens,
+				total_tokens, tool_calls, error, attempts, cached_tokens, first_output
+			) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 				row.ID, row.Time.UnixMilli(), row.Protocol, row.Path, row.Model, row.Account, row.Channel, row.Status, row.State,
 				row.Duration.Milliseconds(), row.FirstEvent.Milliseconds(), row.Queue.Milliseconds(),
 				row.InputTokens, row.ReasoningTokens, row.ReplyTokens, row.TotalTokens, row.ToolCalls, row.Error, string(encoded),
-				row.CachedTokens)
+				row.CachedTokens, row.FirstOutput)
 			if err != nil {
 				return err
 			}
