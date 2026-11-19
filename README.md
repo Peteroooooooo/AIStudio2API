@@ -653,8 +653,8 @@ cp .env.example .env
 | `MODEL_CHANNELS` | 空 | 限定模型只走一个通道，每项写成 `模型 ID:playground` 或 `模型 ID:build`；也可在“模型目录”的模型详情中选择，保存后立即生效 |
 | `MODEL_ACCOUNTS` | 空 | 模型可用的账户，每项写成 `模型 ID:账户\|账户`，未列出的模型可用全部账户；也可在“模型目录”的模型详情中勾选，保存后立即生效 |
 | `BUILD_NATIVE_NONSTREAM` | `true` | 启用 Build 通道时非流式请求优先使用 Build 原生单次调用；不可用时回退流式并记录原因 |
-| `NONSTREAM_KEEPALIVE` | `true` | 非流式请求等待结果超过 10 秒时先返回 200，之后每 10 秒写出一个换行直到写出 JSON 正文，经 Cloudflare 等反向代理时连接不会因长时间无数据断开；此后才出现的错误以协议错误正文返回 |
-| `FAKE_STREAM` | `false` | 流式请求先按非流式取得完整结果再按流式格式输出，中途失败时换号重发，等待期间照常发送心跳 |
+| `NONSTREAM_KEEPALIVE` | `false` | 开启后，非流式请求等待超过 10 秒时先返回 200，随后每 10 秒写出一个换行以保持连接。后续错误通过协议错误正文返回 |
+| `FAKE_STREAM` | `false` | 流式请求先按非流式取得完整结果再按流式格式输出，中途失败时换号重发，收到首个生成事件后开始发送流式响应 |
 | `YOUTUBE_LINKS` | `false` | 用户消息文本中的 YouTube 链接作为视频发送给模型，并从文本中移除 |
 | `STRIP_THOUGHT_SIGNATURES` | `false` | 发往上游前去掉对话历史中的思考签名，函数调用带 `skip_thought_signature_validator`；之前各轮的思考内容不随签名发给模型，长对话的输入 token 较少 |
 | `SEARCH_MODEL_ALIASES` | `true` | 提供支持搜索的模型的 `-search` 型号，使用该型号时启用 Google 搜索 |

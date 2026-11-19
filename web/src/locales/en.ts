@@ -203,6 +203,13 @@ export const messages: Record<TranslationKey, string> = {
   'accounts.testPassedUnfrozen': '{name} test passed & unfrozen ({model}, {latency}ms): {reply}',
   'accounts.testFailedNotice': '{name} test failed: {error}',
   'accounts.testModel': 'Test model',
+  'accounts.testModelAuto': 'Auto',
+  'accounts.testModelAutoHint': 'Picks a cooling model first, otherwise a lightweight model',
+  'accounts.testModelPinned': 'Pinned',
+  'accounts.testAutoTooltip': 'Chat test (Auto)',
+  'accounts.testWithModel': 'Chat test ({model})',
+  'accounts.testUnsupportedTier': 'Account tier lacks access; this model requires {tier}',
+  'accounts.testUnsupportedModel': '{model} is not in this account’s catalog',
   'accounts.freezeUntil': 'Frozen until {time}',
   'accounts.saved': 'Account saved',
   'accounts.remoteAdd': 'Add remotely',
@@ -486,14 +493,16 @@ export const messages: Record<TranslationKey, string> = {
   'settings.accountOrderRest': 'The other {count} accounts follow in ID order',
   'settings.accountTestModels': 'Account test models',
   'settings.accountTestModelsHelp':
-    'Models offered by the chat test on the Accounts page, listed in this order in its dropdown; the first is the default. When none are selected, the test picks a model automatically (a cooling model first)',
+    'The Accounts page lists all available chat models and uses Auto by default. Models added here are pinned to the top of that selector',
   'settings.accountTestModelsDrag': 'Drag {model} to reorder',
   'settings.accountTestModelsUp': 'Move {model} up',
   'settings.accountTestModelsDown': 'Move {model} down',
   'settings.accountTestModelsRemove': 'Remove {model}',
-  'settings.accountTestModelsAdd': 'Add test model',
-  'settings.accountTestModelsUnset': 'None selected; the test picks a model automatically',
-  'settings.accountTestModelsDefault': 'Tests {model} by default; switch on the Accounts page',
+  'settings.accountTestModelsAdd': 'Pin test model',
+  'settings.accountTestModelsUnset':
+    'None pinned; the Accounts page lists all available models (Auto by default)',
+  'settings.accountTestModelsDefault':
+    'Pinned {model} first; switch any model on the Accounts page',
   'settings.maxAccountSwitches': 'Max account switches',
   'settings.maxAccountSwitchesHelp':
     'How many times a request moves to another account after a non-quota upstream error such as 403 or 5xx; 0 disables switching, and quota errors do not count',
@@ -539,8 +548,7 @@ export const messages: Record<TranslationKey, string> = {
   'settings.previewFallback':
     '{configured} is in use or unavailable, so the preview service uses {active}',
   'settings.pendingService': 'Saved values apply the next time the generation service starts',
-  'settings.pendingManagement':
-    'Restart the app to apply the listen address or console sign-in',
+  'settings.pendingManagement': 'Restart the app to apply the listen address or console sign-in',
   'settings.saved': 'Settings saved',
   'settings.savedService':
     'Settings saved. Stop and start the generation service at the bottom left to apply them.',

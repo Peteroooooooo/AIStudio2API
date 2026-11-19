@@ -376,11 +376,14 @@ func geminiErrorPayload(err error, seconds int64) map[string]any {
 	return payload
 }
 
-// setRetryAfter 在错误给出可重试时刻时写入 Retry-After 秒数并返回它，否则返回 0
+// setRetryAfter 写入恢复时间，长时间的限流同时标记为无需自动重试
 func setRetryAfter(w http.ResponseWriter, err error) int64 {
 	seconds := retryAfterSeconds(err)
 	if seconds > 0 {
 		w.Header().Set("Retry-After", strconv.FormatInt(seconds, 10))
+	}
+	if seconds > int64(aistudio.CooldownQueueLimit/time.Second) && statusFromError(err) == http.StatusTooManyRequests {
+		w.Header().Set("x-should-retry", "false")
 	}
 	return seconds
 }

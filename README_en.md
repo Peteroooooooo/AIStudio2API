@@ -653,8 +653,8 @@ Process environment variables override the same keys in `.env`, and those settin
 | `MODEL_CHANNELS` | empty | Limit a model to one channel, each item `model ID:playground` or `model ID:build`; also selectable in model details on the Model catalog page, applied on save |
 | `MODEL_ACCOUNTS` | empty | Accounts a model may use, each item `model ID:account\|account`; models not listed can use every account. Also selectable in model details on the Model catalog page, applied on save |
 | `BUILD_NATIVE_NONSTREAM` | `true` | With the Build channel enabled, prefer native Build unary calls for non-streaming requests; log any fallback to stream collection |
-| `NONSTREAM_KEEPALIVE` | `true` | When a non-streaming request waits longer than 10 seconds, return 200 first and write a newline every 10 seconds until the JSON body, so reverse proxies such as Cloudflare keep the connection open; errors after that point come back as the protocol error body |
-| `FAKE_STREAM` | `false` | Streaming requests get the full result as a non-streaming generation, retry on another account if it fails midway, then stream it in the protocol format; heartbeats continue while waiting |
+| `NONSTREAM_KEEPALIVE` | `false` | When enabled, non-streaming requests return 200 after 10 seconds and write a newline every 10 seconds to keep the connection open. Later errors are sent in the protocol error body |
+| `FAKE_STREAM` | `false` | Streaming requests get the full result as a non-streaming generation and retry on another account if it fails midway. The streaming response starts after the first generation event |
 | `YOUTUBE_LINKS` | `false` | Send YouTube links in user message text to the model as video and remove them from the text |
 | `STRIP_THOUGHT_SIGNATURES` | `false` | Remove thought signatures from conversation history before sending upstream and send function calls with `skip_thought_signature_validator`; earlier turns' thinking is not passed to the model with the signatures, so long conversations use fewer input tokens |
 | `SEARCH_MODEL_ALIASES` | `true` | Offer `-search` variants of search-capable models; requests using these variants enable Google Search |

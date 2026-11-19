@@ -195,7 +195,6 @@ func Default() Config {
 		LogFile:                true,
 		LogMaxTotalMB:          500,
 		BuildNativeNonstream:   true,
-		NonstreamKeepalive:     true,
 		SearchModelAliases:     true,
 		FirstEventHedge:        FirstEventHedgeOff,
 		FirstEventHedgeModels:  DefaultFirstEventHedgeModels,

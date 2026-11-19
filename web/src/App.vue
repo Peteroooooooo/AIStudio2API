@@ -539,6 +539,7 @@ onMounted(() => {
             v-else-if="currentTab === 'accounts'"
             :accounts="visibleAccounts"
             :tasks="accountTasks"
+            :models="models"
             :loading="loading.accounts"
             :error="errors.accounts"
             :chrome-import="status?.chrome_import ?? false"

@@ -9,7 +9,7 @@ import {
   DropdownMenuTrigger,
 } from 'reka-ui'
 import { api, ApiError } from '@/api'
-import { parseTestModels } from '@/accountTest'
+import { accountTestSupport, buildAccountTestOptions } from '@/accountTest'
 import { useDownloadProgress, waitsForCamoufox } from '@/camoufox'
 import { useI18n, type TranslationKey } from '@/i18n'
 import { usePaged } from '@/paging'
@@ -25,11 +25,13 @@ import type {
   PreparationStatus,
   ChromeImportProfile,
   CookieBrowser,
+  Model,
   PairingToken,
 } from '@/types'
 import type { IconName } from '@/icons'
 import AccountEnvironmentFields from './AccountEnvironmentFields.vue'
 import AccountExits from './AccountExits.vue'
+import AccountTestModelSelect from './AccountTestModelSelect.vue'
 import CamoufoxProgressBar from './CamoufoxProgressBar.vue'
 import DetailDialog from './DetailDialog.vue'
 import DisclosureChevron from './DisclosureChevron.vue'
@@ -47,6 +49,7 @@ type CookieCandidate = CookieBrowser & { source: number }
 const props = defineProps<{
   accounts: Account[]
   tasks: AccountTask[]
+  models: Model[]
   loading: boolean
   error: string
   // chromeImport 表示服务所在平台能从 Chrome 导入账户
@@ -55,7 +58,7 @@ const props = defineProps<{
   camoufox: PreparationStatus | undefined
   // geoip 是出口 IP 库的准备状态，下载期间在出口区块与进行中的任务行显示进度
   geoip: PreparationStatus | undefined
-  // testModels 是设置中账户测试下拉框按顺序列出的模型 ID，逗号分隔，为空时测试自动选模型
+  // testModels 是设置中置顶的账户测试模型 ID，逗号分隔
   testModels: string
 }>()
 
@@ -219,22 +222,46 @@ const search = ref('')
 const selectedState = ref('')
 const selectedTier = ref('')
 const selectedEgress = ref('*')
-// testModelOptions 是设置中勾选的账户测试模型，按设置顺序
-const testModelOptions = computed(() => parseTestModels(props.testModels))
-// pickedTestModel 是浏览器记住的测试模型，不在设置的列表中时用第一个
+// testModelOptions 是账户页测试下拉框可选的模型：置顶配置模型在前，其余为当前账户池可用的对话模型
+const testModelOptions = computed(() =>
+  buildAccountTestOptions(props.models, props.accounts, props.testModels),
+)
+// pickedTestModel 是浏览器记住的测试模型，为空字符串表示自动选择
 const pickedTestModel = ref(
   readPreference('accounts.testModel', '', (value) => typeof value === 'string'),
 )
 const testModel = computed({
-  get: () =>
-    testModelOptions.value.includes(pickedTestModel.value)
-      ? pickedTestModel.value
-      : (testModelOptions.value[0] ?? ''),
+  get: () => {
+    if (pickedTestModel.value === '') return ''
+    if (testModelOptions.value.some((option) => option.id === pickedTestModel.value))
+      return pickedTestModel.value
+    return props.models.length === 0 ? pickedTestModel.value : ''
+  },
   set: (value: string) => {
     pickedTestModel.value = value
     writePreference('accounts.testModel', value)
   },
 })
+const selectedTestModel = computed(() => props.models.find((model) => model.id === testModel.value))
+
+// testSupport 判断当前所选测试模型是否可用于该账户
+function testSupport(account: Account) {
+  return accountTestSupport(account, testModel.value, selectedTestModel.value)
+}
+
+// testButtonLabel 返回行内对话测试按钮的悬停与无障碍提示，不支持当前所选模型时标明原因
+function testButtonLabel(account: Account): string {
+  if (testing.has(account.id)) return t('accounts.testing')
+  const support = testSupport(account)
+  if (!support.supported) {
+    return support.reason === 'tier'
+      ? t('accounts.testUnsupportedTier').replace('{tier}', support.requiredTier)
+      : t('accounts.testUnsupportedModel').replace('{model}', testModel.value)
+  }
+  return testModel.value === ''
+    ? t('accounts.testAutoTooltip')
+    : t('accounts.testWithModel').replace('{model}', testModel.value)
+}
 const states = computed(() =>
   keepSelected(
     [...new Set(props.accounts.map((account) => account.state))],
@@ -1337,17 +1364,12 @@ async function refreshAccounts(accounts: Account[]): Promise<void> {
             {{ egress ? maskedProxy(egress) : t('accounts.direct') }}
           </option>
         </UiSelect>
-        <UiSelect
-          v-if="testModelOptions.length > 0"
+        <AccountTestModelSelect
+          v-if="accounts.length > 0 || testModelOptions.length > 0"
           v-model="testModel"
-          v-tooltip="t('accounts.testModel')"
-          :aria-label="t('accounts.testModel')"
-          class="max-w-60 rounded-md border border-line bg-canvas px-2 py-1.5 text-xs text-gray-200"
-        >
-          <option v-for="model in testModelOptions" :key="model" :value="model">
-            {{ model }}
-          </option>
-        </UiSelect>
+          :options="testModelOptions"
+          :label="t('accounts.testModel')"
+        />
       </div>
       <AccountExits v-if="accounts.length > 0" :accounts="accounts" :geoip="geoip" />
       <p v-if="error" class="flex items-center gap-2 text-sm text-red-300">
@@ -1606,25 +1628,27 @@ async function refreshAccounts(accounts: Account[]): Promise<void> {
               >
                 {{ t('common.relogin') }}
               </button>
-              <button
-                v-tooltip="t(testing.has(account.id) ? 'accounts.testing' : 'accounts.test')"
-                type="button"
-                :class="[accountIconClass, 'hover:text-blue-400']"
-                :disabled="
-                  testing.has(account.id) ||
-                  refreshing.has(account.id) ||
-                  queued.has(account.id) ||
-                  pendingAction === `login:${account.id}` ||
-                  reloggingAccounts.has(account.id) ||
-                  !account.enabled ||
-                  account.transition !== undefined
-                "
-                :aria-label="t(testing.has(account.id) ? 'accounts.testing' : 'accounts.test')"
-                :aria-busy="testing.has(account.id)"
-                @click="testAccount(account)"
-              >
-                <UiIcon :name="testing.has(account.id) ? 'spinner' : 'throughput'" :size="15" />
-              </button>
+              <span v-tooltip="testButtonLabel(account)" class="inline-flex">
+                <button
+                  type="button"
+                  :class="[accountIconClass, 'hover:text-blue-400']"
+                  :disabled="
+                    testing.has(account.id) ||
+                    refreshing.has(account.id) ||
+                    queued.has(account.id) ||
+                    pendingAction === `login:${account.id}` ||
+                    reloggingAccounts.has(account.id) ||
+                    !account.enabled ||
+                    account.transition !== undefined ||
+                    !testSupport(account).supported
+                  "
+                  :aria-label="testButtonLabel(account)"
+                  :aria-busy="testing.has(account.id)"
+                  @click="testAccount(account)"
+                >
+                  <UiIcon :name="testing.has(account.id) ? 'spinner' : 'throughput'" :size="15" />
+                </button>
+              </span>
               <button
                 v-tooltip="t(queued.has(account.id) ? 'accounts.queued' : 'accounts.refresh')"
                 type="button"
