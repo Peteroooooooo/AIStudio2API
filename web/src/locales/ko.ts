@@ -1966,6 +1966,7 @@ export const messages: Record<TranslationKey, string> = {
   'usage.failedCard': '실패 / 제한',
   'usage.subRealtime': 'Realtime',
   'usage.subAccounts': 'Accounts',
+  'usage.subModels': 'Models',
   'usage.subCooldowns': '활성 및 쿨다운',
   'usage.subCharts': '차트',
   'usage.masked': '마스킹',

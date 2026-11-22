@@ -1984,6 +1984,7 @@ export const messages: Record<TranslationKey, string> = {
   'usage.failedCard': '失敗 / 制限',
   'usage.subRealtime': 'Realtime',
   'usage.subAccounts': 'Accounts',
+  'usage.subModels': 'Models',
   'usage.subCooldowns': '稼働・クールダウン',
   'usage.subCharts': 'チャート',
   'usage.masked': 'マスク',

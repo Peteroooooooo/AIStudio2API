@@ -1997,6 +1997,7 @@ export const messages: Record<TranslationKey, string> = {
   'usage.failedCard': 'Failed / Limited',
   'usage.subRealtime': 'Realtime',
   'usage.subAccounts': 'Accounts',
+  'usage.subModels': 'Models',
   'usage.subCooldowns': 'Live & Cooldowns',
   'usage.subCharts': 'Charts',
   'usage.masked': 'Masked',

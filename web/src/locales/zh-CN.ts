@@ -1880,6 +1880,7 @@ export const messages = {
   'usage.failedCard': '失败 / 限流',
   'usage.subRealtime': 'Realtime 请求流',
   'usage.subAccounts': 'Accounts 负载',
+  'usage.subModels': 'Models 模型',
   'usage.subCooldowns': '活跃与冷却',
   'usage.subCharts': '趋势图表',
   'usage.masked': '脱敏',

@@ -2037,6 +2037,7 @@ export const messages: Record<TranslationKey, string> = {
   'usage.failedCard': 'Échecs / Limités',
   'usage.subRealtime': 'Temps réel',
   'usage.subAccounts': 'Comptes',
+  'usage.subModels': 'Modèles',
   'usage.subCooldowns': 'Actifs & Cooldowns',
   'usage.subCharts': 'Graphiques',
   'usage.masked': 'Masqué',

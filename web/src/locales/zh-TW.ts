@@ -1887,6 +1887,7 @@ export const messages: Record<TranslationKey, string> = {
   'usage.failedCard': '失敗 / 限流',
   'usage.subRealtime': 'Realtime 請求流',
   'usage.subAccounts': 'Accounts 負載',
+  'usage.subModels': 'Models 模型',
   'usage.subCooldowns': '活躍與冷卻',
   'usage.subCharts': '趨勢圖表',
   'usage.masked': '遮罩',

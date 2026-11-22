@@ -33,7 +33,7 @@ import {
   type RangePreset,
 } from './usage/model'
 
-type SubTab = 'realtime' | 'accounts' | 'cooldowns' | 'charts'
+type SubTab = 'realtime' | 'accounts' | 'models' | 'cooldowns' | 'charts'
 
 const props = withDefaults(
   defineProps<{
@@ -68,7 +68,7 @@ const state = useUsageState()
 
 const subTab = ref<SubTab>(
   readPreference<SubTab>('usage.subTab', props.initialSubTab, (value) =>
-    ['realtime', 'accounts', 'cooldowns', 'charts'].includes(value as string),
+    ['realtime', 'accounts', 'models', 'cooldowns', 'charts'].includes(value as string),
   ),
 )
 watch(subTab, (value) => writePreference('usage.subTab', value))
@@ -731,6 +731,22 @@ const liveAndCooldownCount = computed(() => props.requests.length + props.cooldo
                   type="button"
                   class="inline-flex items-center gap-2 rounded-xl border px-3 py-1.5 text-xs font-medium transition"
                   :class="
+                    subTab === 'models'
+                      ? 'border-blue-500/30 bg-blue-500/10 text-blue-400 font-semibold'
+                      : 'border-transparent text-gray-400 hover:bg-raised hover:text-white'
+                  "
+                  @click="subTab = 'models'"
+                >
+                  {{ t('usage.subModels') }}
+                  <span class="rounded-full border border-line bg-panel px-1.5 py-0.2 text-[11px] tabular-nums">
+                    {{ report.groups.model.length }}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  class="inline-flex items-center gap-2 rounded-xl border px-3 py-1.5 text-xs font-medium transition"
+                  :class="
                     subTab === 'cooldowns'
                       ? 'border-blue-500/30 bg-blue-500/10 text-blue-400 font-semibold'
                       : 'border-transparent text-gray-400 hover:bg-raised hover:text-white'
@@ -792,6 +808,29 @@ const liveAndCooldownCount = computed(() => props.requests.length + props.cooldo
               </div>
               <RankingTable
                 v-else
+                key="accounts"
+                :report="report"
+                :load-pairs="loadPairs"
+                :accounts="accounts"
+                :cooldowns="cooldowns"
+                @filter="addFilter"
+                @filter-pair="addFilterPair"
+                @status="state.status = $event"
+              />
+            </div>
+
+            <div v-else-if="subTab === 'models'" class="p-4">
+              <div
+                v-if="report.totals.requests === 0"
+                class="flex flex-col items-center justify-center py-14 text-center"
+              >
+                <UiIcon name="empty" :size="32" class="mb-2 text-gray-600" />
+                <p class="text-sm text-gray-400">{{ hasFilters ? t('usage.emptyFiltered') : t('usage.empty') }}</p>
+              </div>
+              <RankingTable
+                v-else
+                key="models"
+                fixed-tab="model"
                 :report="report"
                 :load-pairs="loadPairs"
                 :accounts="accounts"

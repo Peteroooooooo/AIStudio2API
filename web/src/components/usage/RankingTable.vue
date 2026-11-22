@@ -40,10 +40,12 @@ const props = withDefaults(
     loadPairs: (dimension: Breakdown, key: string) => Promise<Pairs>
     accounts?: Account[]
     cooldowns?: Cooldown[]
+    fixedTab?: Tab | undefined
   }>(),
   {
     accounts: () => [],
     cooldowns: () => [],
+    fixedTab: undefined,
   },
 )
 const emit = defineEmits<{
@@ -58,17 +60,24 @@ const clock = inject(usageClock, ref(Date.now()))
 const id = useId()
 const tabs: Tab[] = ['account', 'model', 'channel', 'protocol', 'state', 'status']
 const tab = ref<Tab>(
-  readPreference('usage.rankingTab', 'account', (value) => tabs.includes(value as Tab)),
+  props.fixedTab ??
+    readPreference('usage.rankingTab', 'account', (value) => tabs.includes(value as Tab)),
 )
 const sort = ref<{ key: SortKey; descending: boolean }>({ key: 'requests', descending: true })
 const expanded = ref(new Set<string>())
 // shown 是显示组合明细的行：展开的行与正在收起的行，收起过渡结束后移除
 const shown = ref(new Set<string>())
 watch(tab, (value) => {
-  writePreference('usage.rankingTab', value)
+  if (props.fixedTab === undefined) writePreference('usage.rankingTab', value)
   expanded.value = new Set()
   shown.value = new Set()
 })
+watch(
+  () => props.fixedTab,
+  (value) => {
+    if (value !== undefined) tab.value = value
+  },
+)
 
 const columns: { key: SortKey; label: () => string; numeric: boolean }[] = [
   { key: 'key', label: () => t(`usage.dimension.${tab.value}`), numeric: false },
@@ -229,6 +238,57 @@ function accountStatusBadge(accountKey: string): StatusBadge | null {
     tooltip: models.join(', '),
     tone: 'border-amber-500/30 bg-amber-500/10 text-amber-400',
   }
+}
+
+function modelStatusBadge(modelKey: string): StatusBadge | null {
+  if (tab.value !== 'model') return null
+  const limitedAccounts = new Set<string>()
+  const cooledAccounts = new Set<string>()
+  let limitKind = ''
+
+  for (const account of props.accounts) {
+    const freeze = account.quota_freeze
+    if (!freeze || freeze.global || Date.parse(freeze.until) <= clock.value) continue
+    if ((freeze.scopes ?? []).some((scope) => scope === modelKey || scope === `build:${modelKey}`)) {
+      limitedAccounts.add(account.label)
+      if (!limitKind) limitKind = freeze.kind
+    }
+  }
+
+  for (const item of activeCooldowns.value) {
+    if (item.model_id !== modelKey || item.scope === '*') continue
+    const category = splitReason(item.reason)
+    if (category === '每日限额' || category === '套餐限额') {
+      limitedAccounts.add(item.account_label)
+      if (!limitKind) limitKind = category
+    } else {
+      cooledAccounts.add(item.account_label)
+    }
+  }
+
+  if (limitedAccounts.size > 0) {
+    return {
+      text: `${limitedAccounts.size} ${logText(limitKind)}`,
+      tooltip: [...limitedAccounts].join(', '),
+      tone: 'border-amber-500/30 bg-amber-500/10 text-amber-400',
+    }
+  }
+
+  if (cooledAccounts.size > 0) {
+    return {
+      text: `${cooledAccounts.size} ${t('state.cooldown')}`,
+      tooltip: [...cooledAccounts].join(', '),
+      tone: 'border-amber-500/30 bg-amber-500/10 text-amber-400',
+    }
+  }
+
+  return null
+}
+
+function rowStatusBadge(rowKey: string): StatusBadge | null {
+  if (tab.value === 'account') return accountStatusBadge(rowKey)
+  if (tab.value === 'model') return modelStatusBadge(rowKey)
+  return null
 }
 
 function pairStatusBadge(accountKey: string, modelKey: string): StatusBadge | null {
@@ -399,8 +459,18 @@ function childCells(stats: UsageStats): { key: string; text: string; tone?: stri
 <template>
   <section class="min-w-0 rounded-lg border border-line bg-panel">
     <header class="flex flex-wrap items-center gap-3 border-b border-line px-4 pt-3">
-      <h3 class="mr-auto pb-3 text-sm font-semibold text-gray-200">{{ t('usage.ranking') }}</h3>
-      <div role="tablist" :aria-label="t('usage.ranking')" class="flex gap-1 overflow-x-auto">
+      <h3 class="mr-auto pb-3 text-sm font-semibold text-gray-200">
+        {{ fixedTab ? t(`usage.dimension.${fixedTab}`) : t('usage.ranking') }}
+        <span v-if="fixedTab" class="ml-1.5 text-xs font-normal text-gray-500 tabular-nums">
+          {{ report.groups[fixedTab].length }}
+        </span>
+      </h3>
+      <div
+        v-if="!fixedTab"
+        role="tablist"
+        :aria-label="t('usage.ranking')"
+        class="flex gap-1 overflow-x-auto"
+      >
         <button
           v-for="item in tabs"
           :id="`${id}-tab-${item}`"
@@ -427,8 +497,8 @@ function childCells(stats: UsageStats): { key: string; text: string; tone?: stri
     </header>
     <div
       :id="`${id}-panel`"
-      role="tabpanel"
-      :aria-labelledby="`${id}-tab-${tab}`"
+      :role="fixedTab ? undefined : 'tabpanel'"
+      :aria-labelledby="fixedTab ? undefined : `${id}-tab-${tab}`"
       class="relative overflow-x-auto"
     >
       <table class="w-full min-w-[56rem] text-left text-xs whitespace-nowrap">
@@ -492,12 +562,12 @@ function childCells(stats: UsageStats): { key: string; text: string; tone?: stri
                     dimensionLabel(tab, row.key)
                   }}</span>
                   <span
-                    v-if="accountStatusBadge(row.key)"
-                    v-tooltip="accountStatusBadge(row.key)!.tooltip"
+                    v-if="rowStatusBadge(row.key)"
+                    v-tooltip="rowStatusBadge(row.key)!.tooltip"
                     class="shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-semibold"
-                    :class="accountStatusBadge(row.key)!.tone"
+                    :class="rowStatusBadge(row.key)!.tone"
                   >
-                    {{ accountStatusBadge(row.key)!.text }}
+                    {{ rowStatusBadge(row.key)!.text }}
                   </span>
                 </div>
                 <div class="mt-1 ml-5 h-1 rounded-full bg-raised">
