@@ -8,6 +8,7 @@ import type {
   Model,
   RequestSummary,
   UsageDimension,
+  UsagePair,
   UsageReport,
   UsageStats,
 } from '@/types'
@@ -156,7 +157,6 @@ async function load(): Promise<void> {
   }
   query.set('tz', timezone)
   query.set('stack', state.stack)
-  query.set('pairs', '0')
   controller?.abort()
   const current = new AbortController()
   controller = current
@@ -176,16 +176,12 @@ async function load(): Promise<void> {
   }
 }
 
-async function loadPairs(
-  dimension: 'account' | 'model',
-  key: string,
-): Promise<UsageReport['pairs']> {
+// loadPairs 读取当前范围与筛选下一个账户或模型的组合明细
+async function loadPairs(dimension: 'account' | 'model', key: string): Promise<UsagePair[]> {
   const query = baseQuery()
   if (query === null) throw new Error(t('usage.rangeInvalid'))
   query.set(dimension, key)
-  query.set('tz', timezone)
-  query.set('stack', state.stack)
-  return (await api.usage(query, new AbortController().signal)).pairs
+  return api.usagePairs(query)
 }
 
 function refresh(): void {

@@ -18,7 +18,8 @@ import {
 import { waitsForCamoufox } from '@/camoufox'
 import { useConsole } from '@/console'
 import { useI18n, type TranslationKey } from '@/i18n'
-import type { TabID } from '@/types'
+import { elapsedText, serverTime, useSecondClock } from '@/elapsed'
+import type { ServiceTransition, TabID } from '@/types'
 import CamoufoxBanner from '@/components/CamoufoxBanner.vue'
 import UiDisclosure from '@/components/UiDisclosure.vue'
 import LogsPanel from '@/components/LogsPanel.vue'
@@ -153,6 +154,7 @@ const {
   retryCamoufox,
   clearLogs,
   waitForRestart,
+  restartStalled,
 } = useConsole()
 
 const noticeText = computed(() => logText(notice.message))
@@ -192,15 +194,45 @@ const camoufoxInTask = computed(
     accountTasks.value.some((task) => waitsForCamoufox(task, status.value?.camoufox)),
 )
 
+// switching 表示生成服务正在启动或停止
+const switching = computed(
+  () => serviceState.value === 'launching' || serviceState.value === 'stopping',
+)
+
 const statusDotClass = computed(() => {
   if (serviceState.value === 'running') return 'bg-green-500'
-  if (serviceState.value === 'launching') return 'bg-cyan-400 animate-pulse'
+  if (switching.value) return 'bg-cyan-400 animate-pulse'
   return 'bg-gray-500'
+})
+
+// transitionLabels 是生成服务各启动与停止步骤的文字
+const transitionLabels: Record<ServiceTransition, TranslationKey> = {
+  probe_proxies: 'app.stepProbeProxies',
+  wait_camoufox: 'app.stepWaitCamoufox',
+  wait_catalog: 'app.stepWaitCatalog',
+  start_prewarm: 'app.stepStartPrewarm',
+  cancel_requests: 'app.stepCancelRequests',
+  wait_catalog_stop: 'app.stepWaitCatalogStop',
+  close_workers: 'app.stepCloseWorkers',
+}
+// now 是生成服务处于启动或停止步骤时每秒更新的当前时间
+const now = useSecondClock(() => status.value?.transition_since !== undefined)
+
+// transitionStep 是当前启动或停止步骤的文字，没有步骤时为空串
+const transitionStep = computed(() => {
+  const transition = status.value?.transition
+  return transition === undefined ? '' : t(transitionLabels[transition])
+})
+
+// transitionElapsed 是当前步骤的已用时间文字
+const transitionElapsed = computed(() => {
+  const since = status.value?.transition_since
+  return elapsedText(since === undefined ? now.value : serverTime(since), now.value, locale.value)
 })
 
 const statusChipClass = computed(() => {
   if (serviceState.value === 'running') return 'border-green-500/30 bg-green-500/10 text-green-400'
-  if (serviceState.value === 'launching') return 'border-cyan-500/30 bg-cyan-500/10 text-cyan-300'
+  if (switching.value) return 'border-cyan-500/30 bg-cyan-500/10 text-cyan-300'
   return 'border-line bg-canvas text-gray-400'
 })
 
@@ -284,7 +316,13 @@ onMounted(() => {
             :class="statusChipClass"
           >
             <span class="h-2 w-2 rounded-full" :class="statusDotClass"></span>
-            <span class="hidden sm:inline">{{ serviceStateLabel }}</span>
+            <span v-if="transitionStep" class="hidden items-center gap-1.5 sm:inline-flex">
+              <span v-tooltip.overflow="transitionStep" class="max-w-36 truncate">{{
+                transitionStep
+              }}</span>
+              <span class="text-gray-400 tabular-nums">{{ transitionElapsed }}</span>
+            </span>
+            <span v-else class="hidden sm:inline">{{ serviceStateLabel }}</span>
             <button
               v-if="serviceState === 'stopped' || serviceState === 'unavailable'"
               type="button"
@@ -296,13 +334,16 @@ onMounted(() => {
               {{ t('app.start') }}
             </button>
             <button
-              v-else-if="serviceState === 'launching' || serviceState === 'running'"
+              v-else
               type="button"
               class="inline-flex items-center gap-1 rounded-full border border-red-500/30 bg-red-500/12 px-2 py-0.5 text-[11px] font-semibold text-red-400 hover:bg-red-500/20 disabled:opacity-50"
-              :disabled="stopPending"
+              :disabled="stopPending || serviceState === 'stopping'"
               @click="stopService"
             >
-              <UiIcon :name="stopPending ? 'spinner' : 'stop'" :size="10" />
+              <UiIcon
+                :name="stopPending || serviceState === 'stopping' ? 'spinner' : 'stop'"
+                :size="10"
+              />
               {{ t('app.stop') }}
             </button>
           </div>
@@ -430,11 +471,11 @@ onMounted(() => {
             :accounts="visibleAccounts"
             :tasks="accountTasks"
             :models="models"
+            :cooldowns="cooldowns"
             :loading="loading.accounts"
             :error="errors.accounts"
             :chrome-import="status?.chrome_import ?? false"
             :camoufox="status?.camoufox"
-            :geoip="status?.geoip"
             :test-models="config?.account_test_models ?? ''"
             @refresh="loadAccountData"
             @updated="updateAccount"
@@ -529,6 +570,7 @@ onMounted(() => {
             <VersionPanel
               :status="update"
               :active-requests="status?.active_requests ?? 0"
+              :restart-stalled="restartStalled"
               @status="update = $event"
               @restarting="waitForRestart"
             />

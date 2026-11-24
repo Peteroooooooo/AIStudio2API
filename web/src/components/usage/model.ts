@@ -125,44 +125,45 @@ export function useUsageState(): UsageViewState {
   return state
 }
 
-// localInput 把时间格式化为 datetime-local 输入框的本地时间文本
-export function localInput(date: Date): string {
-  const pad = (value: number): string => String(value).padStart(2, '0')
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
+const pacificParts = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'America/Los_Angeles',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hourCycle: 'h23',
+})
+
+// pacificWall 返回指定时刻在太平洋时区的年月日时分秒
+function pacificWall(date: Date): Record<string, number> {
+  const parts: Record<string, number> = {}
+  for (const part of pacificParts.formatToParts(date)) {
+    if (part.type !== 'literal') parts[part.type] = Number(part.value)
+  }
+  return parts
 }
 
-// lastQuotaDayStart 计算最近一次美西时间（America/Los_Angeles，自动适配 PST 16:00 / PDT 15:00）零点的本地时间
-export function lastQuotaDayStart(now: Date): Date {
-  const fmt = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/Los_Angeles',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hourCycle: 'h23',
-  })
-  const partMap = (d: Date) => {
-    const map: Record<string, number> = {}
-    for (const part of fmt.formatToParts(d)) {
-      if (part.type !== 'literal') map[part.type] = Number(part.value)
-    }
-    return map
-  }
-  const cur = partMap(now)
-  const year = cur.year!
-  const month = cur.month!
-  const day = cur.day!
-  // 美西零点约为 UTC 08:00 (PST) 或 UTC 07:00 (PDT)
-  const guess = Date.UTC(year, month - 1, day, 8, 0, 0)
-  const g = partMap(new Date(guess))
-  let diffHours = g.hour!
-  if (g.day !== day) {
-    diffHours = g.day! < day ? diffHours - 24 : diffHours + 24
-  }
-  return new Date(guess - diffHours * 3_600_000 - (g.minute ?? 0) * 60_000 - (g.second ?? 0) * 1000)
+// quotaDayStart 返回不晚于 now 的最近一次太平洋时间零点（自动适配 PST 16:00 / PDT 15:00）
+export function quotaDayStart(now: Date): Date {
+  const { year, month, day } = pacificWall(now)
+  const wallMidnight = Date.UTC(year!, month! - 1, day!)
+  const guess = wallMidnight + 8 * 3_600_000
+  const actual = pacificWall(new Date(guess))
+  const delta =
+    Date.UTC(
+      actual.year!,
+      actual.month! - 1,
+      actual.day!,
+      actual.hour! % 24,
+      actual.minute!,
+      actual.second!,
+    ) - wallMidnight
+  return new Date(guess - delta)
 }
+
+export const lastQuotaDayStart = quotaDayStart
 
 // resolveRange 把视图状态解析为具体的起止时间，自定义范围无效时返回 null
 export function resolveRange(
@@ -179,7 +180,7 @@ export function resolveRange(
         to: midnight,
       }
     case 'quotaCycle':
-      return { from: lastQuotaDayStart(now), to: now }
+      return { from: quotaDayStart(now), to: now }
     case 'week': {
       const weekday = (now.getDay() + 6) % 7
       return {

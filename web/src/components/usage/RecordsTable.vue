@@ -605,8 +605,12 @@ function latencyWidth(milliseconds: number): number {
               <span v-tooltip.overflow="record.account" class="truncate">{{
                 maskAccount(record.account)
               }}</span>
-              <span class="ml-auto shrink-0">{{ duration(record.duration_ms) }}</span>
-              <span class="shrink-0">{{ compact(record.input_tokens) }}</span>
+              <span class="ml-auto shrink-0"
+                >{{ t('usage.duration') }} {{ duration(record.duration_ms) }}</span
+              >
+              <span class="shrink-0"
+                >{{ t('usage.input') }} {{ compact(record.input_tokens) }}</span
+              >
             </div>
           </button>
         </li>
@@ -626,25 +630,27 @@ function latencyWidth(milliseconds: number): number {
           {{ t('usage.pageSize').replace('{count}', String(size)) }}
         </option>
       </UiSelect>
-      <span class="ml-auto tabular-nums">{{
-        t('usage.page').replace('{page}', String(page + 1))
-      }}</span>
-      <button
-        type="button"
-        class="flex items-center gap-1 rounded-lg border border-line px-2.5 py-1 hover:bg-raised disabled:opacity-40"
-        :disabled="page === 0"
-        @click="move(-1)"
-      >
-        <UiIcon name="chevronLeft" :size="12" />{{ t('usage.previousPage') }}
-      </button>
-      <button
-        type="button"
-        class="flex items-center gap-1 rounded-lg border border-line px-2.5 py-1 hover:bg-raised disabled:opacity-40"
-        :disabled="nextCursor === undefined"
-        @click="move(1)"
-      >
-        {{ t('usage.nextPage') }}<UiIcon name="chevronRight" :size="12" />
-      </button>
+      <div class="ml-auto flex items-center gap-2">
+        <span class="tabular-nums">{{
+          t('usage.page').replace('{page}', String(page + 1))
+        }}</span>
+        <button
+          type="button"
+          class="flex items-center gap-1 rounded-lg border border-line px-2.5 py-1 hover:bg-raised disabled:opacity-40"
+          :disabled="page === 0"
+          @click="move(-1)"
+        >
+          <UiIcon name="chevronLeft" :size="12" />{{ t('usage.previousPage') }}
+        </button>
+        <button
+          type="button"
+          class="flex items-center gap-1 rounded-lg border border-line px-2.5 py-1 hover:bg-raised disabled:opacity-40"
+          :disabled="nextCursor === undefined"
+          @click="move(1)"
+        >
+          {{ t('usage.nextPage') }}<UiIcon name="chevronRight" :size="12" />
+        </button>
+      </div>
     </footer>
     <RecordDrawer :record="selected" @close="selected = null" />
   </section>

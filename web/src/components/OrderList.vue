@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
+import { useAppendList } from '@/rows'
 import FilterMenu from './FilterMenu.vue'
 import UiIcon from './UiIcon.vue'
 
@@ -67,6 +68,13 @@ function drop(index: number): void {
   endDrag()
 }
 
+const reveal = useAppendList('list')
+// 新加入的条目排在末尾，加入后把它滚入列表
+watch(
+  () => selected.value.length,
+  (count, before) => count > before && reveal(false),
+)
+
 // endDrag 结束拖动
 function endDrag(): void {
   dragging.value = -1
@@ -79,7 +87,7 @@ const actionClass =
 
 <template>
   <div class="space-y-2">
-    <ol v-if="selected.length > 0" :aria-labelledby="labelledby">
+    <ol v-if="selected.length > 0" ref="list" class="append-list" :aria-labelledby="labelledby">
       <li
         v-for="(id, index) in selected"
         :key="id"

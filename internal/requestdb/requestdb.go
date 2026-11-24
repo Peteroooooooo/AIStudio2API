@@ -32,6 +32,9 @@ const batchLimit = 256
 // queueLimit 是等待写入的最大记录数，队列已满时丢弃新记录
 const queueLimit = 4096
 
+// statementCache 是账本每个连接缓存的预编译语句数，容纳写入记录、正文、小时与日汇总的全部语句
+const statementCache = 16
+
 // hourMS 是一小时的毫秒数
 const hourMS = int64(time.Hour / time.Millisecond)
 
@@ -51,7 +54,9 @@ CREATE TABLE IF NOT EXISTS requests (
  duration_ms INTEGER NOT NULL, first_event_ms INTEGER NOT NULL, queue_ms INTEGER NOT NULL,
  input_tokens INTEGER NOT NULL, reasoning_tokens INTEGER NOT NULL, reply_tokens INTEGER NOT NULL,
  total_tokens INTEGER NOT NULL, tool_calls INTEGER NOT NULL, error TEXT NOT NULL, attempts TEXT NOT NULL,
- cached_tokens INTEGER NOT NULL DEFAULT 0, first_output INTEGER NOT NULL DEFAULT -1);
+ cached_tokens INTEGER NOT NULL DEFAULT 0, first_output INTEGER NOT NULL DEFAULT -1,
+ proof_ms INTEGER NOT NULL DEFAULT 0, proof_lock_ms INTEGER NOT NULL DEFAULT 0,
+ proof_interaction_ms INTEGER NOT NULL DEFAULT 0, proof_refresh_ms INTEGER NOT NULL DEFAULT 0, proof_compute_ms INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS requests_time ON requests(time);
 CREATE INDEX IF NOT EXISTS requests_cost ON requests(time, model, input_tokens, cached_tokens, reasoning_tokens, reply_tokens);
 CREATE INDEX IF NOT EXISTS requests_model_time ON requests(model, time);
@@ -78,6 +83,7 @@ type Row struct {
 	FirstEvent      time.Duration
 	FirstOutput     int64
 	Queue           time.Duration
+	Proof           api.ProofTiming
 	InputTokens     int64
 	CachedTokens    int64
 	ReasoningTokens int64
@@ -114,7 +120,7 @@ func Open(path string, log Logger) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
-	db, err := sqlitedb.Open(path, schema)
+	db, err := sqlitedb.Open(path, schema, statementCache)
 	if err != nil {
 		return nil, fmt.Errorf("初始化请求账本: %w", err)
 	}
@@ -281,12 +287,15 @@ func (store *Store) write(batch []write) (err error) {
 			result, err := tx.Exec(`INSERT OR IGNORE INTO requests (
 				id, time, protocol, path, model, account, channel, status, state,
 				duration_ms, first_event_ms, queue_ms, input_tokens, reasoning_tokens, reply_tokens,
-				total_tokens, tool_calls, error, attempts, cached_tokens, first_output
-			) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+				total_tokens, tool_calls, error, attempts, cached_tokens, first_output,
+				proof_ms, proof_lock_ms, proof_interaction_ms, proof_refresh_ms, proof_compute_ms
+			) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 				row.ID, row.Time.UnixMilli(), row.Protocol, row.Path, row.Model, row.Account, row.Channel, row.Status, row.State,
 				row.Duration.Milliseconds(), row.FirstEvent.Milliseconds(), row.Queue.Milliseconds(),
 				row.InputTokens, row.ReasoningTokens, row.ReplyTokens, row.TotalTokens, row.ToolCalls, row.Error, string(encoded),
-				row.CachedTokens, row.FirstOutput)
+				row.CachedTokens, row.FirstOutput,
+				row.Proof.Total.Milliseconds(), row.Proof.Lock.Milliseconds(), row.Proof.Interaction.Milliseconds(),
+				row.Proof.Refresh.Milliseconds(), row.Proof.Compute.Milliseconds())
 			if err != nil {
 				return err
 			}

@@ -27,8 +27,9 @@ type ProtectedResponse struct {
 
 // protectedMessage 是受保护请求通道上以 { 开头的控制消息：界面运行时先是带 proof 的发出标记，之后是状态码与响应头，最后是结束标记或错误；其余消息为 Base64 正文块
 type protectedMessage struct {
-	Sent    bool        `json:"sent"`
-	Proof   string      `json:"proof"`
+	Sent  bool   `json:"sent"`
+	Proof string `json:"proof"`
+	pageProofTiming
 	Status  int         `json:"status"`
 	Headers [][2]string `json:"headers"`
 	Done    bool        `json:"done"`
@@ -345,17 +346,18 @@ type protectedResponseBody struct {
 	channel   *bidiChannel
 	// stop 在正文读完前关闭时中止请求，为空时在页面中止 XHR
 	stop func() error
-	// release 在关闭时结束请求所在的标签页使用，参数表示正文已读完与正文中出现了函数调用；为空时按受保护请求结束
-	release func(done, call bool)
+	// release 在关闭时结束请求所在的标签页使用，参数表示正文已正常读完与正文中出现了函数调用；为空时按受保护请求结束
+	release func(completed, call bool)
 	// call 表示正文中出现了函数调用 Part，tail 是已读正文末尾不足一个标记长度的字节
 	call bool
 	tail []byte
 
-	mu       sync.Mutex
-	buffer   []byte
-	consumed int
-	done     bool
-	closed   bool
+	mu        sync.Mutex
+	buffer    []byte
+	consumed  int
+	done      bool
+	completed bool
+	closed    bool
 }
 
 func (body *protectedResponseBody) Read(target []byte) (int, error) {
@@ -398,6 +400,7 @@ func (body *protectedResponseBody) Read(target []byte) (int, error) {
 		}
 		if message.Error != "" || message.Done {
 			body.done = true
+			body.completed = message.Done && message.Error == ""
 			body.worker.client.closeChannel(body.requestID)
 		}
 		if message.Error != "" {
@@ -420,10 +423,10 @@ func (body *protectedResponseBody) Close() error {
 		return nil
 	}
 	body.closed = true
-	done, call := body.done, body.call
+	done, completed, call := body.done, body.completed, body.call
 	body.mu.Unlock()
 	if body.release != nil {
-		defer body.release(done, call)
+		defer body.release(completed, call)
 	} else {
 		defer body.worker.finishRequest(body.contextID)
 	}

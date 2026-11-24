@@ -119,8 +119,8 @@ func (p *AccountPool) SetAPIKeyAccounts(accounts map[string][]string) {
 	p.notifyLocked()
 }
 
-// scopedSelection 把请求指定的账户、所用 API key 与模型绑定的账户并入选择，指定账户与绑定资源的选择不受模型绑定限制
-func (p *AccountPool) scopedSelection(ctx context.Context, selection AccountSelection) AccountSelection {
+// ScopedSelection 把请求指定的账户、所用 API key 与模型绑定的账户并入选择，指定账户与绑定资源的选择不受模型绑定限制
+func (p *AccountPool) ScopedSelection(ctx context.Context, selection AccountSelection) AccountSelection {
 	if selection.AccountID == "" {
 		selection.AccountID = contextAccount(ctx)
 	}
@@ -225,7 +225,7 @@ func buildMethodSelection(selection AccountSelection) bool {
 
 // selectionChannelsLocked 返回选择可使用的通道顺序，优先通道排在首位，限定通道的模型只使用该通道
 func (p *AccountPool) selectionChannelsLocked(selection AccountSelection) []Channel {
-	if p.assistantModelLocked(selection.ModelID) {
+	if p.assistantSelectionLocked(selection) {
 		return []Channel{ChannelAssistant}
 	}
 	if !generationChannelSelection(selection) {
@@ -373,16 +373,14 @@ func (p *AccountPool) assistantModelLocked(modelID string) bool {
 	return p.modelCapabilityLocked(modelID, "assistant_route")
 }
 
-// assistantBusyLocked 判断账户正在为 -build 选择运行另一个写代码助手生成，同一账户同时只运行一个
-func (p *AccountPool) assistantBusyLocked(account *Account, selection AccountSelection) bool {
-	return account.assistantBusy && p.assistantModelLocked(selection.ModelID)
+// assistantSelectionLocked 判断选择是否为经写代码助手发送的 -build 模型生成，调用方持有 p.mu
+func (p *AccountPool) assistantSelectionLocked(selection AccountSelection) bool {
+	return selection.Method == "generateContent" && p.assistantModelLocked(selection.ModelID)
 }
 
-// InteractionAgentModel 判断模型是否为经 CreateInteraction 后台任务生成的 agent，如 Deep Research 与 Antigravity
-func (p *AccountPool) InteractionAgentModel(modelID string) bool {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.modelCapabilityLocked(modelID, "interaction_task")
+// assistantBusyLocked 判断账户正在为 -build 生成选择运行另一个写代码助手生成，同一账户同时只运行一个
+func (p *AccountPool) assistantBusyLocked(account *Account, selection AccountSelection) bool {
+	return account.assistantBusy && p.assistantSelectionLocked(selection)
 }
 
 // modelCapabilityLocked 返回目录中首个同 ID 模型的能力标记
@@ -413,6 +411,11 @@ func (p *AccountPool) buildSupportsModelLocked(account *Account, modelID string,
 	}
 	if !found {
 		return false
+	}
+	for _, model := range account.Models {
+		if modelMatchesID(model, modelID) {
+			return !buildExcludedPlaygroundModel(model) && (anyTier || modelAllowedByTier(model, account.BenefitTier))
+		}
 	}
 	for _, candidate := range p.accounts {
 		for _, model := range candidate.Models {
