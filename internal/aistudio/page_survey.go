@@ -27,8 +27,8 @@ const (
 	surveyStartupKey = "AIzaSyCB6OnnfuitFnaYWu4BvtGKaoLFk4cm-GE"
 	// surveyLibraryVersion 是反馈服务脚本的问卷库版本
 	surveyLibraryVersion = 438217234
-	// surveyLanguage 是前端主程序创建 HaTS 服务时的问卷语言
-	surveyLanguage = "en-US"
+	// defaultSurveyLanguage 是账号未指定语言时的默认问卷语言
+	defaultSurveyLanguage = "en-US"
 	// surveyModelDelay 是需要模型名的问卷在回答结束后等待的时长，期间开始新的回答即取消
 	surveyModelDelay = 15 * time.Second
 )
@@ -162,7 +162,7 @@ func (runtime *goWAARuntime) requestSurvey(id string) {
 	if err != nil || !surveyEnabled(config) {
 		return
 	}
-	_, _ = runtime.surveyRPC(ctx, surveys.framed, "trigger", runtime.headers.Get("x-goog-api-key"), surveyTriggerBody(id, time.Now().In(runtime.location())))
+	_, _ = runtime.surveyRPC(ctx, surveys.framed, "trigger", runtime.headers.Get("x-goog-api-key"), surveyTriggerBody(id, runtime.profile.Locale, time.Now().In(runtime.location())))
 }
 
 // loadSurveyFrame 以 iframe 导航载入 feedback-pa 的 gapi 代理页，再按代理页的顺序载入 googleapis.proxy.js 与其中的代理模块，返回代理页地址
@@ -243,13 +243,18 @@ func surveyEnabled(config []byte) bool {
 }
 
 // surveyTriggerBody 返回请求问卷 id 的 JSPB 正文：触发上下文为问卷 ID 与语言，客户端上下文为 at 所在时区相对 UTC 的秒数（为 0 时不写）与问卷库的平台、支持的问卷形式和版本
-func surveyTriggerBody(id string, at time.Time) string {
+func surveyTriggerBody(id string, language string, at time.Time) string {
+	language = strings.TrimSpace(language)
+	if language == "" {
+		language = defaultSurveyLanguage
+	}
+	encodedLang, _ := json.Marshal(language)
 	_, offset := at.Zone()
 	timezone := "[]"
 	if offset != 0 {
 		timezone = "[" + strconv.Itoa(offset) + "]"
 	}
-	return `[["` + id + `",["` + surveyLanguage + `"]],[[null,null,` + timezone + `],[1,null,[1,2],` + strconv.Itoa(surveyLibraryVersion) + `]]]`
+	return `[["` + id + `",[` + string(encodedLang) + `]],[[null,null,` + timezone + `],[1,null,[1,2],` + strconv.Itoa(surveyLibraryVersion) + `]]]`
 }
 
 // gapiProxyExtensions 返回 googleapis.proxy.js 配置中声明的 le 列表，以逗号相连；代理页按地址中的 jsh 载入代理模块时不带脚本末尾追加的扩展

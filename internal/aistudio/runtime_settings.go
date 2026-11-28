@@ -3,6 +3,7 @@ package aistudio
 import (
 	"bytes"
 	"encoding/json"
+	"math/rand/v2"
 	"strings"
 	"time"
 
@@ -35,6 +36,11 @@ const (
 	dialogPause = 5900 * time.Millisecond
 )
 
+// jitterPause 按 base 的 ±20% 均匀随机采样暂停时长
+func jitterPause(base time.Duration) time.Duration {
+	return time.Duration(float64(base) * (0.8 + 0.4*rand.Float64()))
+}
+
 // settingSteps 返回点击 Run 之前把页面运行设置改成 body 所需的各组可信界面操作
 // 各步点击时记录官网界面元素事件并更新页面状态，放不进空闲区间的组不做，页面状态不变
 func (runtime *goWAARuntime) settingSteps(body []byte) [][]waa.SettingStep {
@@ -53,28 +59,28 @@ func (runtime *goWAARuntime) settingSteps(body []byte) [][]waa.SettingStep {
 		if len(groups) == 0 {
 			return 0
 		}
-		return pickedPause
+		return jitterPause(pickedPause)
 	}
 	if model != "" && model != elements.pageModel() && elements.listedModel(model) {
 		hold := time.Duration((runtime.rhythm.Press + runtime.rhythm.Hold) * float64(time.Millisecond))
 		group := []waa.SettingStep{{Wait: wait(), To: "selector", Clicked: elements.openSelector}}
 		if !elements.featuredModel(model) {
-			group = append(group, waa.SettingStep{Wait: selectorPause, To: "all", Clicked: elements.openAll})
+			group = append(group, waa.SettingStep{Wait: jitterPause(selectorPause), To: "all", Clicked: elements.openAll})
 		}
-		groups = append(groups, append(group, waa.SettingStep{Wait: selectorPause, To: "row", Clicked: func(at time.Time) { elements.pickModel(at.Add(-hold), at, model) }}))
+		groups = append(groups, append(group, waa.SettingStep{Wait: jitterPause(selectorPause), To: "row", Clicked: func(at time.Time) { elements.pickModel(at.Add(-hold), at, model) }}))
 	}
 	if level := bodyThinkingLevel(fields); level != 0 && level != elements.pageLevel(model) {
 		groups = append(groups, []waa.SettingStep{
 			{Wait: wait(), To: "level"},
-			{Wait: levelPause, To: "option", Clicked: func(at time.Time) { elements.changeLevel(at, level) }},
+			{Wait: jitterPause(levelPause), To: "option", Clicked: func(at time.Time) { elements.changeLevel(at, level) }},
 		})
 	}
 	if system := rawField(fields, 5); !bytes.Equal(system, runtime.settings.system) {
 		if text := systemText(system); text != "" {
 			groups = append(groups, []waa.SettingStep{
 				{Wait: wait(), To: "system", Clicked: elements.openSystem},
-				{Wait: systemPause, To: "instructions", Text: text, Clicked: elements.editSystem},
-				{Wait: closePause, To: "close", Clicked: func(time.Time) { runtime.settings.system = bytes.Clone(system) }},
+				{Wait: jitterPause(systemPause), To: "instructions", Text: text, Clicked: elements.editSystem},
+				{Wait: jitterPause(closePause), To: "close", Clicked: func(time.Time) { runtime.settings.system = bytes.Clone(system) }},
 			})
 		}
 	}
@@ -86,19 +92,19 @@ func (runtime *goWAARuntime) settingSteps(body []byte) [][]waa.SettingStep {
 				elements.toggle(at, veGrounding)
 				runtime.settings.groundingOff = true
 			}})
-			pause = togglePause
+			pause = jitterPause(togglePause)
 		}
 		if !runtime.settings.functions {
 			group = append(group, waa.SettingStep{Wait: pause, To: "functions", Clicked: func(at time.Time) {
 				elements.toggle(at, veFunctions)
 				runtime.settings.functions = true
 			}})
-			pause = togglePause
+			pause = jitterPause(togglePause)
 		}
 		groups = append(groups, append(group,
 			waa.SettingStep{Wait: pause, To: "edit", Clicked: func(at time.Time) { elements.toggle(at, veFunctionsEdit) }},
-			waa.SettingStep{Wait: dialogPause, To: "declarations", Text: string(tools)},
-			waa.SettingStep{Wait: closePause, To: "save", Clicked: func(time.Time) { runtime.settings.tools = bytes.Clone(tools) }},
+			waa.SettingStep{Wait: jitterPause(dialogPause), To: "declarations", Text: string(tools)},
+			waa.SettingStep{Wait: jitterPause(closePause), To: "save", Clicked: func(time.Time) { runtime.settings.tools = bytes.Clone(tools) }},
 		))
 	}
 	return groups

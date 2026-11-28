@@ -79,7 +79,7 @@ func EncodeGenerateContentRequest(request GenerateRequest, defaults GenerationDe
 	wire := make([]any, length)
 	wire[0] = wireModelName(request.Model)
 	wire[1] = contents
-	safety, err := resolveSafetySettings(request.SafetySettings, defaults.ImageRoute)
+	safety, err := resolveSafetySettings(request.SafetySettings)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -774,7 +774,7 @@ func validateGenerateEntry(request GenerateRequest, entry modelEntry) error {
 	if _, err := encodeGenerationConfig(applyModelMediaDefaults(request.Config, entry.model), entry.defaults); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidArgument, err)
 	}
-	if _, err := resolveSafetySettings(request.SafetySettings, entry.defaults.ImageRoute); err != nil {
+	if _, err := resolveSafetySettings(request.SafetySettings); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidArgument, err)
 	}
 	return nil
@@ -1199,7 +1199,7 @@ func finishAtStopSequence(ctx context.Context, request GenerateRequest, output O
 	_ = send(Event{Kind: EventFinish, FinishReason: "stop_sequence", StopSequence: sequence})
 }
 
-// truncateRequest 按权威计数删除最早的完整对话轮次，倍增定位后二分查找最少的删除轮数
+// truncateRequest 按权威计数删除最早的完整对话轮次，先以本地字节估算定位候选下标并向邻近区间收敛，再二分查找最少的删除轮数
 func (c *Client) truncateRequest(ctx context.Context, request GenerateRequest, limit int64) (GenerateRequest, error) {
 	starts := []int{0}
 	for start := 0; ; {
@@ -1210,29 +1210,64 @@ func (c *Client) truncateRequest(ctx context.Context, request GenerateRequest, l
 		start += next
 		starts = append(starts, start)
 	}
-	fits := func(index int) (bool, error) {
+	countAt := func(index int) (int64, error) {
 		count, err := c.CountTokensForAccount(ctx, request.AccountID, TokenCountRequest{
 			Model: request.Model, System: request.System, Contents: request.Contents[starts[index]:], Tools: request.Tools,
 		})
-		return err == nil && count.InputTokens <= limit, err
+		if err != nil {
+			return 0, err
+		}
+		return count.InputTokens, nil
 	}
-	if ok, err := fits(0); err != nil || ok {
+	totalTokens, err := countAt(0)
+	if err != nil || totalTokens <= limit {
 		return request, err
 	}
-	failed, fitted := 0, 1
-	for {
-		fitted = min(fitted, len(starts)-1)
-		if fitted == failed {
-			return request, fmt.Errorf("%w: 最新对话轮次超过模型上下文窗口 %d", ErrInvalidArgument, limit)
+	if len(starts) == 1 {
+		return request, fmt.Errorf("%w: 最新对话轮次超过模型上下文窗口 %d", ErrInvalidArgument, limit)
+	}
+	fits := func(index int) (bool, error) {
+		tokens, err := countAt(index)
+		return err == nil && tokens <= limit, err
+	}
+	guess := estimateTruncateIndex(request.Contents, starts, totalTokens-limit)
+	ok, err := fits(guess)
+	if err != nil {
+		return request, err
+	}
+	failed, fitted := 0, len(starts)-1
+	if ok {
+		fitted = guess
+		for step := 1; fitted-step > failed; step *= 2 {
+			probe := fitted - step
+			ok, err := fits(probe)
+			if err != nil {
+				return request, err
+			}
+			if ok {
+				fitted = probe
+			} else {
+				failed = probe
+				break
+			}
 		}
-		ok, err := fits(fitted)
-		if err != nil {
-			return request, err
+	} else {
+		failed = guess
+		for step := 1; ; step *= 2 {
+			if failed == len(starts)-1 {
+				return request, fmt.Errorf("%w: 最新对话轮次超过模型上下文窗口 %d", ErrInvalidArgument, limit)
+			}
+			probe := min(failed+step, len(starts)-1)
+			ok, err := fits(probe)
+			if err != nil {
+				return request, err
+			}
+			if ok {
+				fitted = probe
+				break
+			}
+			failed = probe
 		}
-		if ok {
-			break
-		}
-		failed, fitted = fitted, fitted*2
 	}
 	for fitted-failed > 1 {
 		middle := (failed + fitted) / 2
@@ -1248,6 +1283,51 @@ func (c *Client) truncateRequest(ctx context.Context, request GenerateRequest, l
 	}
 	request.Contents = request.Contents[starts[fitted]:]
 	return request, nil
+}
+
+// estimateTruncateIndex 按每 token 约 3.5 字节估算需要丢弃到的轮次下标，返回 [1, len(starts)-1] 内的试探起点
+func estimateTruncateIndex(contents []Content, starts []int, excessTokens int64) int {
+	targetBytes := (excessTokens*7 + 1) / 2
+	var dropped int64
+	for index := 1; index < len(starts); index++ {
+		for _, content := range contents[starts[index-1]:starts[index]] {
+			dropped += estimateContentBytes(content)
+		}
+		if dropped >= targetBytes {
+			return index
+		}
+	}
+	return len(starts) - 1
+}
+
+// estimateContentBytes 估算单条消息的大致字节规模，非文本媒体按固定保守值折算避免二进制长度扭曲估算
+func estimateContentBytes(content Content) int64 {
+	total := int64(16)
+	for _, part := range content.Parts {
+		total += int64(len(part.Text))
+		if part.InlineData != nil || part.ExternalMedia != nil || part.File != nil || part.Upload != nil {
+			total += 1024
+		}
+		if part.FunctionCall != nil {
+			total += int64(len(part.FunctionCall.Name) + len(part.FunctionCall.Arguments) + 16)
+		}
+		if part.FunctionResult != nil {
+			total += int64(len(part.FunctionResult.Name) + len(part.FunctionResult.Content) + 16)
+		}
+		if part.ExecutableCode != nil {
+			total += int64(len(part.ExecutableCode.Language) + len(part.ExecutableCode.Code) + 16)
+		}
+		if part.CodeExecutionResult != nil {
+			total += int64(len(part.CodeExecutionResult.Outcome) + len(part.CodeExecutionResult.Output) + 16)
+		}
+		if part.ToolCall != nil {
+			total += int64(len(part.ToolCall.Type) + len(part.ToolCall.Name) + len(part.ToolCall.Data) + 16)
+		}
+		if part.ToolResponse != nil {
+			total += int64(len(part.ToolResponse.Type) + len(part.ToolResponse.Name) + len(part.ToolResponse.Data) + 16)
+		}
+	}
+	return total
 }
 
 // nextConversationTurn 查找保留工具调用与结果配对的下一轮用户消息
@@ -1373,7 +1453,7 @@ func (c *Client) decodePlaygroundRounds(ctx context.Context, request GenerateReq
 			}
 			ctx = next
 			lease, _ := AccountLeaseFromContext(ctx)
-			request.AccountID, request.continuationProof = lease.Account().ID, ""
+			request.AccountID, request.continuationProof, request.continuationToken = lease.Account().ID, "", ""
 			switched(ctx, request.AccountID)
 			if c.contextProvider != nil {
 				if runtime, err = c.contextProvider.RequestContext(ctx, request.AccountID); err != nil {

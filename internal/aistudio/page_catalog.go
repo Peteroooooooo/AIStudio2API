@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
+	"time"
 
 	"github.com/Mag1cFall/AIStudio2API/internal/camoufoxnative"
 )
@@ -59,6 +61,14 @@ func (c *Client) acceptTerms(ctx context.Context, accountID string, logging []by
 		return err
 	}
 	if body != nil {
+		delay := 1200*time.Millisecond + rand.N(1600*time.Millisecond)
+		timer := time.NewTimer(delay)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		}
 		response, err := c.do(ctx, "AcceptTerms", accountID, "", body, false)
 		if err != nil {
 			return err

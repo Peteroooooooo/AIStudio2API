@@ -7,12 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/Mag1cFall/AIStudio2API/internal/aistudio"
@@ -91,10 +91,19 @@ func DiscoverCookieAccounts(ctx context.Context, state *aistudio.StorageState, p
 	return discoverSessions(ctx, client, state, headers)
 }
 
-// discoverSessions 以验证客户端从 u/0 起依次识别 Cookie 中各会话登录的账户
+// discoverSessions 以验证客户端从 u/0 起依次识别 Cookie 中各会话登录的账户，各序号探测间加入随机间隔并串行拉取权益
 func discoverSessions(ctx context.Context, client *http.Client, state *aistudio.StorageState, headers http.Header) ([]CookieAccount, error) {
 	var accounts []CookieAccount
 	for authUser := range maxCookieAuthUsers {
+		if authUser > 0 {
+			timer := time.NewTimer(150*time.Millisecond + rand.N(201*time.Millisecond))
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				timer.Stop()
+				return nil, ctx.Err()
+			}
+		}
 		email, err := verifyChatPage(ctx, client, state, headers.Get("User-Agent"), authUser)
 		if authUser > 0 && errors.Is(err, ErrSignedOut) {
 			break
@@ -115,20 +124,17 @@ func discoverSessions(ctx context.Context, client *http.Client, state *aistudio.
 		}
 		accounts = append(accounts, CookieAccount{AuthUser: authUser, Email: email})
 	}
-	var group sync.WaitGroup
 	for index := range accounts {
 		if accounts[index].Restricted != "" || accounts[index].Email == "" {
 			continue
 		}
-		accountIndex := index
-		authUser := accounts[accountIndex].AuthUser
-		group.Go(func() {
-			if tier, err := fetchBenefitTier(ctx, client, state, headers, authUser); err == nil {
-				accounts[accountIndex].BenefitTier = tier.String()
-			}
-		})
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if tier, err := fetchBenefitTier(ctx, client, state, headers, accounts[index].AuthUser); err == nil {
+			accounts[index].BenefitTier = tier.String()
+		}
 	}
-	group.Wait()
 	return accounts, nil
 }
 
@@ -169,8 +175,16 @@ func verifyChatPage(ctx context.Context, client *http.Client, state *aistudio.St
 	}
 	request, _ := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
 	request.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	request.Header.Set("Accept-Language", "en-US,en;q=0.5")
+	request.Header.Set("Accept-Encoding", "gzip, deflate, br, zstd")
 	request.Header.Set("Cookie", cookie)
 	request.Header.Set("User-Agent", userAgent)
+	request.Header.Set("Upgrade-Insecure-Requests", "1")
+	request.Header.Set("Sec-Fetch-Dest", "document")
+	request.Header.Set("Sec-Fetch-Mode", "navigate")
+	request.Header.Set("Sec-Fetch-Site", "none")
+	request.Header.Set("Sec-Fetch-User", "?1")
+	request.Header.Set("Priority", "u=0, i")
 	response, err := client.Do(request)
 	if err != nil {
 		return "", fmt.Errorf("访问 AI Studio 登录页: %w", err)

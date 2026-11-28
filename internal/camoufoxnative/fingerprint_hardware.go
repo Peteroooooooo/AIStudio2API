@@ -35,39 +35,133 @@ type windowsDisplay struct {
 	scales        []weighted[float64]
 }
 
-// firefoxDisplays 是 Firefox 硬件报告 2026-11-02 一周中 Windows 常见主屏物理分辨率的占比，缩放比例按 Windows 依面板像素密度推荐的默认缩放
-var firefoxDisplays = []weighted[windowsDisplay]{
-	{windowsDisplay{1920, 1080, []weighted[float64]{{1, 0.5}, {1.25, 0.35}, {1.5, 0.15}}}, 0.5115},
-	{windowsDisplay{1366, 768, []weighted[float64]{{1, 1}}}, 0.1332},
-	{windowsDisplay{1920, 1200, []weighted[float64]{{1, 0.4}, {1.25, 0.3}, {1.5, 0.3}}}, 0.0507},
-	{windowsDisplay{2560, 1440, []weighted[float64]{{1, 0.45}, {1.25, 0.3}, {1.5, 0.25}}}, 0.0438},
-	{windowsDisplay{1600, 900, []weighted[float64]{{1, 0.85}, {1.25, 0.15}}}, 0.0402},
-	{windowsDisplay{3840, 2160, []weighted[float64]{{1.5, 0.55}, {1.25, 0.1}, {1.75, 0.1}, {2, 0.15}, {2.5, 0.1}}}, 0.0210},
-	{windowsDisplay{1440, 900, []weighted[float64]{{1, 1}}}, 0.0199},
-	{windowsDisplay{1280, 1024, []weighted[float64]{{1, 1}}}, 0.0182},
-	{windowsDisplay{1680, 1050, []weighted[float64]{{1, 1}}}, 0.0116},
-	{windowsDisplay{1024, 768, []weighted[float64]{{1, 1}}}, 0.0112},
-	{windowsDisplay{3440, 1440, []weighted[float64]{{1, 1}}}, 0.0103},
+// hardwareTier 表示新账号指纹抽取时的 Windows 机器硬件档位
+type hardwareTier int
+
+const (
+	hardwareTierLow hardwareTier = iota
+	hardwareTierMainstream
+	hardwareTierHigh
+)
+
+// hardwareProfile 是一组档位一致的 Windows 硬件、显示、音频与存储配额抽样结果
+type hardwareProfile struct {
+	tier         hardwareTier
+	concurrency  int
+	display      windowsDisplay
+	scale        float64
+	taskbar      int
+	webgl        map[string]any
+	audioRate    int
+	audioChans   int
+	storageLimit int
 }
 
-// firefoxTaskbar 是 Firefox 158 指纹保护（ScreenAvailToResolution）在 Windows 上报告可用区域时从屏幕高度减去的 DIP 数，与实际任务栏高度无关
-const firefoxTaskbar = 48
+// windowsHardwareTiers 是新账号指纹中低配、主流、高配 Windows 机器的抽样权重
+var windowsHardwareTiers = []weighted[hardwareTier]{
+	{hardwareTierLow, 0.25},
+	{hardwareTierMainstream, 0.55},
+	{hardwareTierHigh, 0.20},
+}
 
-// firefoxThreads 是 Firefox 硬件报告中各物理核数的占比与对应常见 CPU 的逻辑处理器数
-var firefoxThreads = []weighted[[]weighted[int]]{
-	{[]weighted[int]{{4, 0.6}, {2, 0.4}}, 0.2374},
-	{[]weighted[int]{{8, 0.55}, {4, 0.45}}, 0.2984},
-	{[]weighted[int]{{12, 0.7}, {6, 0.3}}, 0.1505},
-	{[]weighted[int]{{16, 0.6}, {8, 0.25}, {12, 0.15}}, 0.1209},
-	{[]weighted[int]{{12, 0.6}, {16, 0.3}, {20, 0.1}}, 0.0759},
-	{[]weighted[int]{{16, 0.6}, {24, 0.4}}, 0.0380},
-	{[]weighted[int]{{20, 1}}, 0.0254},
-	{[]weighted[int]{{24, 0.4}, {32, 0.4}, {22, 0.2}}, 0.0202},
-	{[]weighted[int]{{24, 0.5}, {32, 0.5}}, 0.0332},
+var (
+	display1920x1080 = windowsDisplay{1920, 1080, []weighted[float64]{{1, 0.5}, {1.25, 0.35}, {1.5, 0.15}}}
+	display1366x768  = windowsDisplay{1366, 768, []weighted[float64]{{1, 1}}}
+	display1920x1200 = windowsDisplay{1920, 1200, []weighted[float64]{{1, 0.4}, {1.25, 0.3}, {1.5, 0.3}}}
+	display2560x1440 = windowsDisplay{2560, 1440, []weighted[float64]{{1, 0.45}, {1.25, 0.3}, {1.5, 0.25}}}
+	display1600x900  = windowsDisplay{1600, 900, []weighted[float64]{{1, 0.85}, {1.25, 0.15}}}
+	display3840x2160 = windowsDisplay{3840, 2160, []weighted[float64]{{1.5, 0.55}, {1.25, 0.1}, {1.75, 0.1}, {2, 0.15}, {2.5, 0.1}}}
+	display1440x900  = windowsDisplay{1440, 900, []weighted[float64]{{1, 1}}}
+	display1280x1024 = windowsDisplay{1280, 1024, []weighted[float64]{{1, 1}}}
+	display1680x1050 = windowsDisplay{1680, 1050, []weighted[float64]{{1, 1}}}
+	display1024x768  = windowsDisplay{1024, 768, []weighted[float64]{{1, 1}}}
+	display3440x1440 = windowsDisplay{3440, 1440, []weighted[float64]{{1, 1}}}
+)
+
+// tierDisplays 是各硬件档位对应的主屏分辨率与缩放分布
+var tierDisplays = map[hardwareTier][]weighted[windowsDisplay]{
+	hardwareTierLow: {
+		{display1920x1080, 0.35},
+		{display1366x768, 0.35},
+		{display1600x900, 0.12},
+		{display1440x900, 0.06},
+		{display1280x1024, 0.05},
+		{display1680x1050, 0.04},
+		{display1024x768, 0.03},
+	},
+	hardwareTierMainstream: {
+		{display1920x1080, 0.65},
+		{display1920x1200, 0.12},
+		{display2560x1440, 0.10},
+		{display1366x768, 0.08},
+		{display1600x900, 0.05},
+	},
+	hardwareTierHigh: {
+		{display1920x1080, 0.35},
+		{display2560x1440, 0.30},
+		{display3840x2160, 0.15},
+		{display1920x1200, 0.12},
+		{display3440x1440, 0.08},
+	},
+}
+
+const (
+	// windowsTaskbarWin10 是 Windows 10 默认任务栏高度（DIP）
+	windowsTaskbarWin10 = 40
+	// windowsTaskbarWin11 是 Windows 11 默认任务栏高度（DIP）
+	windowsTaskbarWin11 = 48
+	// firefoxTaskbar 是缺失或异常 availHeight 时回退使用的默认任务栏高度（DIP）
+	firefoxTaskbar = windowsTaskbarWin11
+)
+
+// tierTaskbars 是各硬件档位对应的 Windows 10 / Windows 11 任务栏高度占比
+var tierTaskbars = map[hardwareTier][]weighted[int]{
+	hardwareTierLow:        {{windowsTaskbarWin10, 0.55}, {windowsTaskbarWin11, 0.45}},
+	hardwareTierMainstream: {{windowsTaskbarWin11, 0.65}, {windowsTaskbarWin10, 0.35}},
+	hardwareTierHigh:       {{windowsTaskbarWin11, 0.80}, {windowsTaskbarWin10, 0.20}},
+}
+
+// tierThreads 是各硬件档位对应的逻辑处理器数（navigator.hardwareConcurrency）占比
+var tierThreads = map[hardwareTier][]weighted[int]{
+	hardwareTierLow: {
+		{2, 0.20}, {4, 0.45}, {6, 0.15}, {8, 0.20},
+	},
+	hardwareTierMainstream: {
+		{4, 0.10}, {6, 0.12}, {8, 0.38}, {12, 0.25}, {16, 0.15},
+	},
+	hardwareTierHigh: {
+		{12, 0.15}, {16, 0.35}, {20, 0.15}, {22, 0.05}, {24, 0.15}, {32, 0.15},
+	},
 }
 
 // firefoxGPUVendors 是 Firefox 硬件报告中 Windows 可能的显卡厂商占比，Microsoft 为没有显卡驱动时的基本显示驱动
 var firefoxGPUVendors = map[string]float64{"Intel": 0.6381, "AMD": 0.1422, "NVIDIA": 0.1308, "Microsoft": 0.0122}
+
+// tierGPUVendors 是各硬件档位对应的显卡厂商权重，中高配不包含 Microsoft 基本显示驱动
+var tierGPUVendors = map[hardwareTier][]weighted[string]{
+	hardwareTierLow: {
+		{"Intel", 0.72}, {"AMD", 0.15}, {"NVIDIA", 0.08}, {"Microsoft", 0.05},
+	},
+	hardwareTierMainstream: {
+		{"Intel", 0.60}, {"NVIDIA", 0.22}, {"AMD", 0.18},
+	},
+	hardwareTierHigh: {
+		{"NVIDIA", 0.55}, {"AMD", 0.25}, {"Intel", 0.20},
+	},
+}
+
+// windowsAudioSampleRates 是 Windows 桌面输出设备常见的 AudioContext 采样率占比
+var windowsAudioSampleRates = []weighted[int]{
+	{48000, 0.80},
+	{44100, 0.20},
+}
+
+// tierStorageLimits 是各硬件档位对应的离散化临时存储配额上限（KB）
+var tierStorageLimits = map[hardwareTier][]weighted[int]{
+	hardwareTierLow:        {{20 << 20, 0.35}, {30 << 20, 0.40}, {50 << 20, 0.25}},
+	hardwareTierMainstream: {{30 << 20, 0.25}, {50 << 20, 0.45}, {80 << 20, 0.30}},
+	hardwareTierHigh:       {{50 << 20, 0.25}, {80 << 20, 0.40}, {100 << 20, 0.35}},
+}
 
 // windowsMediaDeviceCounts 是 BrowserForge 指纹数据（apify_fingerprint_datapoints 0.10.0）中 Windows 桌面 Chrome 与 Edge 未授权时列出的麦克风、摄像头、扬声器个数组合的占比，每类至多一个
 var windowsMediaDeviceCounts = []weighted[[3]int]{
@@ -84,13 +178,33 @@ var windowsMediaDeviceCounts = []weighted[[3]int]{
 // maximizedShare 是新指纹中 Firefox 窗口为最大化状态的比例
 const maximizedShare = 0.7
 
-// applyWindowsDisplay 按抽到的主屏与缩放写入 Firefox 158 在 Windows 上报告的屏幕、可用区域、devicePixelRatio、外窗、内窗与窗口位置：可用区域为屏幕减 firefoxTaskbar，最大化窗口位于 -b、外窗比可用区域大 2b，b 为 9 个物理像素的 CSS 像素数；普通窗口在可用区域内随机放置
-func applyWindowsDisplay(config map[string]any) {
-	display := draw(firefoxDisplays)
-	scale := draw(display.scales)
+// drawWindowsHardwareProfile 先抽机器档位，再联动抽取核数、显卡、分辨率/缩放、任务栏高度、音频采样率与存储配额
+func drawWindowsHardwareProfile() hardwareProfile {
+	tier := draw(windowsHardwareTiers)
+	return drawWindowsHardwareProfileForTier(tier)
+}
+
+// drawWindowsHardwareProfileForTier 按指定档位抽取一组内部自洽的 Windows 硬件画像
+func drawWindowsHardwareProfileForTier(tier hardwareTier) hardwareProfile {
+	display := draw(tierDisplays[tier])
+	return hardwareProfile{
+		tier:         tier,
+		concurrency:  draw(tierThreads[tier]),
+		display:      display,
+		scale:        draw(display.scales),
+		taskbar:      draw(tierTaskbars[tier]),
+		webgl:        windowsWebGLForTier(tier),
+		audioRate:    draw(windowsAudioSampleRates),
+		audioChans:   windowsAudioChannels,
+		storageLimit: draw(tierStorageLimits[tier]),
+	}
+}
+
+// applyWindowsDisplay 按抽到的主屏、缩放与任务栏高度写入 Windows 屏幕、可用区域、devicePixelRatio、外窗、内窗与窗口位置：可用区域为屏幕减 taskbar，最大化窗口位于 -b、外窗比可用区域大 2b，b 为 9 个物理像素的 CSS 像素数；普通窗口在可用区域内随机放置
+func applyWindowsDisplay(config map[string]any, display windowsDisplay, scale float64, taskbar int) {
 	width := int(math.Round(float64(display.width) / scale))
 	height := int(math.Round(float64(display.height) / scale))
-	availHeight := height - firefoxTaskbar
+	availHeight := height - taskbar
 	border := int(math.Round(9 / scale))
 	config["screen.width"], config["screen.height"] = width, height
 	config["screen.availWidth"], config["screen.availHeight"] = width, availHeight
@@ -110,9 +224,41 @@ func applyWindowsDisplay(config map[string]any) {
 	config["window.innerHeight"] = outerHeight - int(math.Round(83+11/scale))
 }
 
-// firefoxHardwareConcurrency 按 Firefox 硬件报告的物理核数占比抽取 navigator.hardwareConcurrency
-func firefoxHardwareConcurrency() int {
-	return draw(draw(firefoxThreads))
+// isLowEndWebGLRenderer 判断 WebGL 渲染器是否属于软件渲染或老旧/极低端显卡档位
+func isLowEndWebGLRenderer(vendor, renderer string) bool {
+	if vendor == "Google Inc. (Microsoft)" || strings.Contains(renderer, "Basic Render Driver") {
+		return true
+	}
+	return strings.Contains(renderer, "vs_4_1") ||
+		strings.Contains(renderer, "HD Graphics 400") ||
+		strings.Contains(renderer, "Radeon HD 3200") ||
+		strings.Contains(renderer, "GTX 480")
+}
+
+// windowsWebGLForTier 按硬件档位抽取匹配的 Firefox 158 模糊化 Windows WebGL 配置，中高配排除软件渲染与极低端集显
+func windowsWebGLForTier(tier hardwareTier) map[string]any {
+	vendor := draw(tierGPUVendors[tier])
+	vendorName := "Google Inc. (" + vendor + ")"
+	var profiles []weighted[map[string]any]
+	for _, profile := range windowsWebGLProfiles {
+		renderer, _ := profile.Config["webGl:renderer"].(string)
+		if profile.Config["webGl:vendor"] != vendorName || !strings.HasSuffix(renderer, ", or similar") {
+			continue
+		}
+		lowEnd := isLowEndWebGLRenderer(vendorName, renderer)
+		if tier == hardwareTierLow {
+			if vendor != "Intel" && !lowEnd {
+				continue
+			}
+		} else if lowEnd {
+			continue
+		}
+		profiles = append(profiles, weighted[map[string]any]{profile.Config, profile.Weight})
+	}
+	if len(profiles) == 0 {
+		return windowsWebGLByVendor()
+	}
+	return maps.Clone(draw(profiles))
 }
 
 // windowsWebGLByVendor 按 Firefox 硬件报告的显卡厂商占比抽取一组 Firefox 158 模糊化后的 Windows WebGL 配置，同一厂商内按官方启动器的权重

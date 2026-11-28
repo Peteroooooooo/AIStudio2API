@@ -121,15 +121,13 @@ type chromeIdentity struct {
 	acceptLanguage string
 }
 
-// readChromeIdentity 按 User Data 的 Last Version 与 profile 的语言设置生成 Chrome 的 User-Agent 与 Accept-Language
+// chromeUserAgentMajor 是与 chrome157Profile TLS 指纹匹配的 Chrome 主版本号
+const chromeUserAgentMajor = "157"
+
+// readChromeIdentity 按与 chrome157Profile 匹配的 Chrome 版本与 profile 的语言设置生成 Chrome 的 User-Agent 与 Accept-Language
 func readChromeIdentity(chromeRoot string, profile string) (chromeIdentity, error) {
-	version, err := os.ReadFile(filepath.Join(chromeRoot, "Last Version"))
-	if err != nil {
-		return chromeIdentity{}, fmt.Errorf("读取 Chrome 版本: %w", err)
-	}
-	major, _, _ := strings.Cut(strings.TrimSpace(string(version)), ".")
 	return chromeIdentity{
-		userAgent:      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/" + major + ".0.0.0 Safari/537.36",
+		userAgent:      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/" + chromeUserAgentMajor + ".0.0.0 Safari/537.36",
 		acceptLanguage: acceptLanguageHeader(profileLanguages(chromeRoot, profile)),
 	}, nil
 }

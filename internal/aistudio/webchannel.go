@@ -6,12 +6,12 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/binary"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	mathrand "math/rand/v2"
 	"net"
 	"net/http"
 	"net/url"
@@ -762,11 +762,19 @@ func (s *BidiSession) runBackchannel(ready chan<- error) {
 		}
 		close(s.done)
 	}()
+	const (
+		initialReconnectBackoff = 250 * time.Millisecond
+		maxReconnectBackoff     = 4 * time.Second
+	)
 	first := true
+	backoff := initialReconnectBackoff
 	for s.ctx.Err() == nil {
 		opening := first
-		_, err := s.readBackchannel(first, reportReady)
+		parsed, err := s.readBackchannel(first, reportReady)
 		first = false
+		if parsed > 0 {
+			backoff = initialReconnectBackoff
+		}
 		if err != nil {
 			if errors.Is(err, errBidiWebChannelClosed) {
 				terminalEvent = true
@@ -777,7 +785,12 @@ func (s *BidiSession) runBackchannel(ready chan<- error) {
 			}
 			var networkErr *bidiBackchannelNetworkError
 			if !opening && errors.As(err, &networkErr) {
-				timer := time.NewTimer(250 * time.Millisecond)
+				delay := backoff
+				if jitterMax := backoff / 4; jitterMax > 0 {
+					delay += time.Duration(mathrand.Int64N(int64(jitterMax) + 1))
+				}
+				backoff = min(backoff*2, maxReconnectBackoff)
+				timer := time.NewTimer(delay)
 				select {
 				case <-timer.C:
 				case <-s.ctx.Done():
@@ -790,6 +803,7 @@ func (s *BidiSession) runBackchannel(ready chan<- error) {
 			streamErr = err
 			return
 		}
+		backoff = initialReconnectBackoff
 	}
 }
 
@@ -1102,7 +1116,7 @@ func (s *BidiSession) cloneHeaders() http.Header {
 func webChannelHeaders(protocolHeaders http.Header) http.Header {
 	headers := make(http.Header)
 	for _, name := range []string{
-		"Accept", "Accept-Language", "User-Agent", "Origin", "Referer", "Sec-Fetch-Dest", "Sec-Fetch-Mode", "Sec-Fetch-Site", "Cookie",
+		"Accept", "Accept-Language", "Accept-Encoding", "User-Agent", "Origin", "Referer", "Sec-Fetch-Dest", "Sec-Fetch-Mode", "Sec-Fetch-Site", "Priority", "Cookie",
 	} {
 		for _, value := range protocolHeaders.Values(name) {
 			headers.Add(name, value)
@@ -1245,7 +1259,10 @@ func newWebChannelRID() int64 {
 }
 
 func newWebChannelZX() string {
-	var raw [8]byte
-	rand.Read(raw[:])
-	return hex.EncodeToString(raw[:])
+	const alphabet = "0123456789abcdefghijklmnopqrstuvwxyz"
+	var buf [12]byte
+	for i := range buf {
+		buf[i] = alphabet[mathrand.IntN(len(alphabet))]
+	}
+	return string(buf[:])
 }

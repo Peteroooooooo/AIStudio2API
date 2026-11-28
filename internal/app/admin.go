@@ -169,7 +169,7 @@ func (admin *runtimeAdmin) AccountExits(ctx context.Context) ([]api.AccountExit,
 	return exits, nil
 }
 
-// accountEnvironment 在后台确定新账户的语言与时区并返回等待结果的函数，该函数只调用一次：locale 或 timezone 未给出时按 proxy 出口的地理位置填写，查询出口失败时取本机的语言与时区；取结果时写入日志，查询失败为 WARN
+// accountEnvironment 在后台确定新账户的语言与时区并返回等待结果的函数，该函数只调用一次：locale 或 timezone 未给出时按 proxy 出口的地理位置填写，查询出口失败时使用中性默认值；取结果时写入日志，查询失败为 WARN
 func (admin *runtimeAdmin) accountEnvironment(ctx context.Context, proxy string, locale string, timezone string) func() egress.Exit {
 	type lookup struct {
 		exit egress.Exit
@@ -184,7 +184,7 @@ func (admin *runtimeAdmin) accountEnvironment(ctx context.Context, proxy string,
 		found := <-result
 		exit := found.exit
 		if found.err != nil {
-			admin.requests.log("auth", "WARN", "查询出口位置失败，账户语言与时区使用本机设置", "locale", exit.Locale, "timezone", exit.Timezone, "error", found.err)
+			admin.requests.log("auth", "WARN", "查询出口位置失败，账户语言与时区使用中性默认值", "locale", exit.Locale, "timezone", exit.Timezone, "error", found.err)
 		} else if exit.IP != "" {
 			admin.requests.log("auth", "INFO", "账户语言与时区按出口位置填写", "egress", exit.IP, "country", exit.Country, "locale", exit.Locale, "timezone", exit.Timezone)
 		}

@@ -19,12 +19,11 @@ const (
 	pageApplication = "alkali-makersuite"
 	// pageRoute 是官网新对话页的路由
 	pageRoute = "prompts/new_chat"
-	// pageLCPSelector 是官网新对话页最大内容绘制元素的选择器
+	// pageLCPSelector 是首次出现 Cookie 提示条时官网新对话页最大内容绘制元素的选择器
 	pageLCPSelector = "#glue-cookie-notification-bar-1>p.glue-cookie-notification-bar__text"
+	// pageMainLCPSelector 是 Cookie 提示条已关闭时官网新对话页主体最大内容绘制元素的选择器
+	pageMainLCPSelector = "ms-prompt-box textarea"
 )
-
-// pageRouteTimes 是官网会话现场中点 New chat 后路由切换的耗时（毫秒）
-var pageRouteTimes = []int{10, 19, 36, 210}
 
 // pageVitals 是一次页面载入的官网 web vitals 上报：load 事件结束后每 pageVitalsInterval 发出一次积攒的记录，第一次为导航计时、绘制、最大内容绘制、首字节与资源统计，之后为页面内路由切换的耗时；clearcut 传输为每次记录计数，计数窗口内第一次记录 pageCountersDelay 后以 2584 发出
 type pageVitals struct {
@@ -58,23 +57,28 @@ func navigationInt(navigation map[string]any, name string) int {
 	return value
 }
 
-// newPageVitals 按 BotGuard 读取的同一份导航计时建立页面载入的 web vitals 上报并安排发送；首次内容绘制取 DOMContentLoaded 到 load 之间官网现场所在的区段，最大内容绘制为同时出现的 Cookie 提示文字，资源统计按官网现场的类别与耗时范围抽样
-func newPageVitals(send func(clearcutShape, []byte), telemetry pageTelemetry, locale string, zone *time.Location, origin time.Time, navigation map[string]any, path string) *pageVitals {
+// newPageVitals 按 BotGuard 读取的同一份导航计时建立页面载入的 web vitals 上报并安排发送；首次内容绘制取 DOMContentLoaded 到 load 之间官网现场所在的区段，最大内容绘制在首次内容绘制之后并按 Cookie 提示条是否已关闭选择对应元素，资源统计按官网现场的类别与耗时范围抽样
+func newPageVitals(send func(clearcutShape, []byte), telemetry pageTelemetry, locale string, zone *time.Location, origin time.Time, navigation map[string]any, path string, cookieBarDismissed bool) *pageVitals {
 	nav := func(name string) int { return navigationInt(navigation, name) }
 	interactive, complete := nav("domInteractive"), nav("domComplete")
 	paint := interactive + int(float64(complete-interactive)*(0.15+0.35*rand.Float64()))
+	lcp := paint + 40 + rand.IntN(180)
+	lcpSelector := pageLCPSelector
+	if cookieBarDismissed {
+		lcpSelector = pageMainLCPSelector
+	}
 	firstByte := nav("responseStart")
 	lookup, connect, connected := nav("domainLookupStart"), nav("connectStart"), nav("connectEnd")
 	payload := make([]any, 18)
 	payload[4] = []any{nil, nil, "aistudio.google.com", pageApplication + "-" + pageRoute, pageApplication, path, nil, 3, pageVitalsID(time.Now()), telemetry.bundle, 1}
 	payload[7] = []any{1, nav("startTime"), nav("fetchStart"), lookup, nav("domainLookupEnd"), connect, connected, nav("requestStart"), firstByte, nav("responseEnd"), interactive, complete, nav("loadEventStart"), nav("loadEventEnd")}
-	payload[8] = []any{nil, paint, nil, paint, firstByte}
+	payload[8] = []any{nil, paint, nil, lcp, firstByte}
 	payload[9] = []any{1, 200 + rand.IntN(100), nil, nil, 9 + rand.IntN(2), 800 + rand.IntN(150), 6, 1300 + rand.IntN(1600), 8 + rand.IntN(2), 1400 + rand.IntN(250)}
 	payload[10] = []any{nil, paint}
 	payload[12] = []any{[]any{[]any{"", pageRoute, 1100 + rand.IntN(500)}}}
 	payload[13] = []any{
 		nil, []any{paint, firstByte, paint - firstByte}, nil,
-		[]any{paint, pageLCPSelector, nil, firstByte, 0, 0, paint - firstByte},
+		[]any{lcp, lcpSelector, nil, firstByte, 0, 0, lcp - firstByte},
 		[]any{firstByte, lookup, connect - lookup, connected - connect, firstByte - connected},
 	}
 	payload[17] = telemetry.sampling
@@ -109,13 +113,13 @@ func (vitals *pageVitals) tick() {
 	vitals.timer = time.AfterFunc(pageVitalsInterval+time.Duration(rand.IntN(7))*time.Millisecond, vitals.tick)
 }
 
-// route 记录页面内路由切换到新对话页：官网点 New chat 后 Angular 路由从开始到结束的耗时，下一次周期发出
+// route 记录页面内路由切换到新对话页：官网点 New chat 后 Angular 路由从开始到结束的耗时，按对数正态分布抽样，下一次周期发出
 func (vitals *pageVitals) route() {
 	vitals.mu.Lock()
 	defer vitals.mu.Unlock()
 	if !vitals.closed {
-		took := pageRouteTimes[rand.IntN(len(pageRouteTimes))]
-		vitals.routes = append(vitals.routes, []any{pageRoute, pageRoute, took + rand.IntN(took/5+1)})
+		took := min(max(8, lognormal(3.2, 0.75)), 600)
+		vitals.routes = append(vitals.routes, []any{pageRoute, pageRoute, took})
 	}
 }
 

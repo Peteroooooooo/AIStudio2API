@@ -6,9 +6,12 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"html"
 	"math/rand/v2"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
@@ -18,6 +21,8 @@ import (
 )
 
 const (
+	// analyticsStateFile 是账户目录下独立保存 GA4 cid 与会话计数 sct 的文件，不写入页面 localStorage
+	analyticsStateFile = "ga4-state.json"
 	// tagManagerOrigin 是 GTM 容器脚本与 gtag 脚本的来源
 	tagManagerOrigin = "https://www.googletagmanager.com"
 	// analyticsCollectURL 是 gtag 发出 GA4 命中的地址
@@ -43,7 +48,28 @@ var (
 	tagHostPattern = regexp.MustCompile(`"\(\.\*\\\\\.google\)\(\\\\\.com\)","value","\$1([^"$]+)\$2"`)
 	// tagFocusedPattern 匹配 gtag 脚本中按需记录、初始化时不分组的实验研究
 	tagFocusedPattern = regexp.MustCompile(`switch\(\w+\.studyId\)\{((?:case \d+:)+)\w+=!0`)
+	// pageTitlePattern 匹配官网文档 HTML 中的 <title>
+	pageTitlePattern = regexp.MustCompile(`(?is)<title[^>]*>(.*?)</title>`)
+	// analyticsStateMu 串行化账户目录下 ga4-state.json 的读写更新
+	analyticsStateMu sync.Mutex
 )
+
+// parsePageTitle 从官网文档 HTML 提取页面标题，缺失或为空时兜底返回 Google AI Studio
+func parsePageTitle(body []byte) string {
+	if match := pageTitlePattern.FindSubmatch(body); match != nil {
+		if title := strings.TrimSpace(html.UnescapeString(string(match[1]))); title != "" {
+			return title
+		}
+	}
+	return "Google AI Studio"
+}
+
+// analyticsState 是保存在账户目录 ga4-state.json 中的跨会话 GA4 标识与计数
+type analyticsState struct {
+	CID    string `json:"cid"`
+	SCT    int    `json:"sct"`
+	LastAt int64  `json:"last_at,omitempty"`
+}
 
 // gtmContainerURL 返回官网文档 Cookie 提示条回调插入的 GTM 容器脚本地址，文档没有时为空
 func gtmContainerURL(body []byte) string {
@@ -248,9 +274,9 @@ type analyticsTarget struct {
 	seq       int
 	last      time.Time
 	// gazAt 是上次经 analytics.google.com 发送命中时附带 _gaz=1 的时刻
-	gazAt     time.Time
-	queue     []analyticsEvent
-	timer     *time.Timer
+	gazAt time.Time
+	queue []analyticsEvent
+	timer *time.Timer
 	// script 是目标的 gtag 脚本地址，cached 表示它取自页面缓存
 	script string
 	cached bool
@@ -263,25 +289,31 @@ type analyticsTarget struct {
 // pageAnalytics 是官网页面上 GTM 与 gtag 的 GA4 上报
 type pageAnalytics struct {
 	runtime *goWAARuntime
+	// statePath 是账户目录下持久化 cid 与 sct 的独立 JSON 文件路径，为空时不落盘
+	statePath string
 	// container 是文档中 GTM 容器脚本的地址
 	container string
-	// location 与 path 是命中的 dl 与 dp
+	// location、path 与 title 是命中的 dl、dp 与 dt
 	location string
 	path     string
+	title    string
 	screen   string
 	language string
 
-	mu      sync.Mutex
-	start   time.Time
-	closed  bool
-	eea     bool
+	mu     sync.Mutex
+	start  time.Time
+	closed bool
+	eea    bool
 	// granted 表示 2a.json 返回不需要提示条且账户无本地选择记录，广告与统计存储均为 granted
 	granted bool
 	// rewritten 是 GTM 改写主机名后的页面地址
-	rewritten string
-	cid       string
-	shared    map[int]int64
-	targets   []*analyticsTarget
+	rewritten    string
+	cid          string
+	sct          int
+	firstVisit   bool
+	sessionReady bool
+	shared       map[int]int64
+	targets      []*analyticsTarget
 	// loaded 表示 GTM 容器与各 gtag 脚本的载入已结束，此后事件只交给已载入的目标
 	loaded bool
 	// waiting 是载入结束前页面发生、载入结束后补记的事件
@@ -294,10 +326,56 @@ func newPageAnalytics(runtime *goWAARuntime, body []byte, target string) *pageAn
 	pagePath := address.Path
 	width, _ := numberValue(runtime.profile.Screen["width"])
 	height, _ := numberValue(runtime.profile.Screen["height"])
-	return &pageAnalytics{
-		runtime: runtime, container: gtmContainerURL(body), location: aiStudioOrigin + pagePath, path: pagePath + "/",
-		screen: strconv.Itoa(int(width)) + "x" + strconv.Itoa(int(height)), language: strings.ToLower(runtime.profile.Locale), shared: map[int]int64{},
+	statePath := ""
+	if runtime.options.StorageStatePath != "" {
+		statePath = filepath.Join(filepath.Dir(runtime.options.StorageStatePath), analyticsStateFile)
 	}
+	return &pageAnalytics{
+		runtime: runtime, statePath: statePath, container: gtmContainerURL(body), location: aiStudioOrigin + pagePath, path: pagePath + "/",
+		title: parsePageTitle(body), screen: strconv.Itoa(int(width)) + "x" + strconv.Itoa(int(height)), language: strings.ToLower(runtime.profile.Locale), shared: map[int]int64{},
+	}
+}
+
+// initSession 按账户目录的 ga4-state.json 复用已有 cid 并递增 sct，新账户则生成 cid 且 sct=1；返回本次调用是否为本页第一个初始化的目标，调用方持有 mu
+func (analytics *pageAnalytics) initSession(now time.Time) bool {
+	if analytics.sessionReady {
+		return false
+	}
+	analytics.sessionReady = true
+	var state analyticsState
+	if analytics.statePath != "" {
+		analyticsStateMu.Lock()
+		defer analyticsStateMu.Unlock()
+		if data, err := os.ReadFile(analytics.statePath); err == nil {
+			_ = json.Unmarshal(data, &state)
+		}
+	}
+	if state.CID != "" && state.SCT > 0 {
+		analytics.cid = state.CID
+		analytics.sct = state.SCT + 1
+		analytics.firstVisit = false
+	} else {
+		analytics.cid = strconv.FormatUint(uint64(rand.Uint32()>>1), 10) + "." + strconv.FormatInt(now.Unix(), 10)
+		analytics.sct = 1
+		analytics.firstVisit = true
+	}
+	if analytics.statePath != "" {
+		if data, err := json.Marshal(analyticsState{CID: analytics.cid, SCT: analytics.sct, LastAt: now.Unix()}); err == nil {
+			_ = atomicWriteFile(analytics.statePath, data, 0o600)
+		}
+	}
+	return true
+}
+
+// pageLocale 返回事件参数与命中使用的页面 locale，优先取账户 locale，为空时取前端界面 locale，最终兜底 en-us
+func (analytics *pageAnalytics) pageLocale() string {
+	if analytics.language != "" {
+		return analytics.language
+	}
+	if analytics.runtime != nil && analytics.runtime.uiLocale != "" {
+		return strings.ToLower(analytics.runtime.uiLocale)
+	}
+	return "en-us"
 }
 
 // load 在 Cookie 提示条载入回调时像官网页面一样记下 gtm.start，随后载入 GTM 容器脚本，再并发载入各 gtag 脚本，每个 gtag 载完后发出 page_view；失败不影响页面与其余目标
@@ -384,17 +462,18 @@ func (analytics *pageAnalytics) ready(tag analyticsTag, container *tagScript, sc
 		target.diagnostics, target.pid = true, rand.Int64N(1<<31)
 		analytics.diagnose(target, false)
 	}
-	first := analytics.cid == ""
-	if first {
-		analytics.cid = strconv.FormatUint(uint64(rand.Uint32()>>1), 10) + "." + strconv.FormatInt(now.Unix(), 10)
-	}
+	firstTarget := analytics.initSession(now)
 	analytics.targets = append(analytics.targets, target)
-	view := analyticsEvent{name: "page_view", gtm: true, at: now, params: []string{"_fv=1"}}
-	if first {
-		view.params = append(view.params, "_nsi=1")
+	var viewParams []string
+	if analytics.firstVisit {
+		viewParams = append(viewParams, "_fv=1")
+		if firstTarget {
+			viewParams = append(viewParams, "_nsi=1")
+		}
 	}
-	view.params = append(view.params, "_ss=1")
-	view.params = append(view.params, analytics.eventParams(tag, "ep.percent_scrolled=0", "ep.scroll_increment=0", "ep.scroll_instance=1")...)
+	viewParams = append(viewParams, "_ss=1")
+	viewParams = append(viewParams, analytics.eventParams(tag, "ep.percent_scrolled=0", "ep.scroll_increment=0", "ep.scroll_instance=1")...)
+	view := analyticsEvent{name: "page_view", gtm: true, at: now, params: viewParams}
 	analytics.send(target, []analyticsEvent{view}, now)
 }
 
@@ -425,7 +504,7 @@ func (analytics *pageAnalytics) experiments(script *tagScript) string {
 func (analytics *pageAnalytics) eventParams(tag analyticsTag, extra ...string) []string {
 	eea := strconv.FormatBool(analytics.eea)
 	storage := strconv.FormatBool(analytics.granted)
-	params := []string{"ep.page_locale=default", "ep.is_eea=" + eea}
+	params := []string{"ep.page_locale=" + uriComponent(analytics.pageLocale()), "ep.is_eea=" + eea}
 	if tag.iseea {
 		params = append(params, "ep.iseea="+eea)
 	}
@@ -608,7 +687,7 @@ func (analytics *pageAnalytics) send(target *analyticsTarget, events []analytics
 	if tag.signals {
 		query = append(query, "ngs=1")
 	}
-	query = append(query, pscdl, "rcb="+strconv.Itoa(target.rcb), "sr="+analytics.screen, "ul="+analytics.language)
+	query = append(query, pscdl, "rcb="+strconv.Itoa(target.rcb), "sr="+analytics.screen, "ul="+analytics.pageLocale())
 	if tag.flags > 0 {
 		query = append(query, "gaf="+strconv.Itoa(tag.flags))
 	}
@@ -617,11 +696,11 @@ func (analytics *pageAnalytics) send(target *analyticsTarget, events []analytics
 	if target.seq > 1 {
 		segment = "seg=1"
 	}
-	location := []string{"dt=-", "dl=" + uriComponent(analytics.location)}
+	location := []string{"dt=" + uriComponent(analytics.title), "dl=" + uriComponent(analytics.location)}
 	if len(events) == 1 && events[0].location != "" {
 		location[1] = "dl=" + uriComponent(events[0].location)
 	}
-	session := []string{"sid=" + strconv.FormatInt(target.sid, 10), "sct=1", segment}
+	session := []string{"sid=" + strconv.FormatInt(target.sid, 10), "sct=" + strconv.Itoa(max(1, analytics.sct)), segment}
 	tfd := "tfd=" + strconv.FormatInt(now.Sub(analytics.runtime.profile.NavigationStart).Milliseconds(), 10)
 	var body []byte
 	if len(events) == 1 {

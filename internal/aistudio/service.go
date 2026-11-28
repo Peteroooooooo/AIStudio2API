@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand/v2"
 	"net/http"
 	"reflect"
 	"slices"
@@ -522,10 +523,16 @@ func (s *PooledService) checkAccountVerification(ctx context.Context, lease *Acc
 	return s.pool.clearRestriction(accountID)
 }
 
+var (
+	verificationPrompts = []string{"Hi", "Hello", "Hey", "Hi there"}
+	accountTestPrompts  = []string{"Reply with OK.", "Say OK.", "Please reply OK.", "Reply with just OK."}
+)
+
 // verificationGeneration 在租约内以 model 发一次最小生成请求并读完响应，返回生成或读取中的错误
 func (s *PooledService) verificationGeneration(ctx context.Context, lease *AccountLease, model string) error {
+	prompt := verificationPrompts[rand.IntN(len(verificationPrompts))]
 	events, err := s.Generate(ContextWithAccountLease(ctx, lease), GenerateRequest{
-		Model: model, AccountID: lease.Account().ID, Contents: []Content{{Role: RoleUser, Parts: []Part{{Text: "Hi"}}}},
+		Model: model, AccountID: lease.Account().ID, Contents: []Content{{Role: RoleUser, Parts: []Part{{Text: prompt}}}},
 	})
 	if err != nil {
 		return err
@@ -1026,10 +1033,11 @@ func (s *PooledService) TestAccountChat(ctx context.Context, accountID string, m
 	modelID = canonicalAccountModelID(lease.Account(), modelID)
 	leaseCtx := ContextWithAccountLease(ctx, lease)
 	maxTokens := int64(32)
+	prompt := accountTestPrompts[rand.IntN(len(accountTestPrompts))]
 	events, genErr := s.Generate(leaseCtx, GenerateRequest{
 		Model:     modelID,
 		AccountID: accountID,
-		Contents:  []Content{{Role: RoleUser, Parts: []Part{{Text: "Reply with OK."}}}},
+		Contents:  []Content{{Role: RoleUser, Parts: []Part{{Text: prompt}}}},
 		Config:    GenerationConfig{MaxOutputTokens: &maxTokens},
 	})
 	var replyBuilder strings.Builder

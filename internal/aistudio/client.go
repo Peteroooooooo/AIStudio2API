@@ -93,8 +93,8 @@ type Client struct {
 	turns           *modelTurnHistory
 	assistants      *assistantAppletCache
 	frontendMu      sync.Mutex
-	// frontend 是按地址解析过的官网前端主程序推荐模型
-	frontend map[string]frontendModels
+	// frontend 是按地址解析与缓存过的官网前端主程序推荐模型及隐藏模型探测结果
+	frontend map[string]*frontendBundleCache
 }
 
 // NewClient 创建协议客户端
@@ -111,7 +111,7 @@ func NewClient(options ClientOptions) *Client {
 		disclaimers:     make(map[string]struct{}),
 		turns:           newModelTurnHistory(),
 		assistants:      newAssistantAppletCache(),
-		frontend:        make(map[string]frontendModels),
+		frontend:        make(map[string]*frontendBundleCache),
 	}
 }
 

@@ -107,11 +107,17 @@ func launchBrowser(ctx context.Context, options Options, config map[string]any) 
 		return nil, "", fmt.Errorf("Camoufox 不可用: %w", err)
 	}
 	config = maps.Clone(config)
+	storageLimit := windowsStorageLimitFromConfig(config)
+	delete(config, quotaTemporaryLimitKey)
 	// voices:blockIfNotDefined 为 true 时语音列表只含指纹中的语音，不加入主机语音
 	config["voices:blockIfNotDefined"] = true
 	if runtime.GOOS != "windows" {
-		config["AudioContext:maxChannelCount"] = windowsAudioChannels
-		config["AudioContext:sampleRate"] = windowsAudioSampleRate
+		if _, ok := integer(config, "AudioContext:maxChannelCount"); !ok {
+			config["AudioContext:maxChannelCount"] = windowsAudioChannels
+		}
+		if _, ok := integer(config, "AudioContext:sampleRate"); !ok {
+			config["AudioContext:sampleRate"] = windowsAudioSampleRate
+		}
 		fonts := fontList(config["fonts"])
 		config["fonts"] = slices.Concat(fonts, windowsFontAliases(fonts))
 		if outer, ok := integer(config, "window.outerHeight"); ok && config["window.innerHeight"] == nil {
@@ -165,7 +171,7 @@ func launchBrowser(ctx context.Context, options Options, config map[string]any) 
 	if runtime.GOOS != "windows" {
 		prefs["dom.webgpu.enabled"] = true
 		prefs["widget.non-native-theme.scrollbar.style"] = windowsScrollbarStyle
-		prefs["dom.quotaManager.temporaryStorage.fixedLimit"] = windowsStorageLimit
+		prefs["dom.quotaManager.temporaryStorage.fixedLimit"] = storageLimit
 		prefs["ui.prefersReducedMotion"] = 0
 		maps.Copy(prefs, windowsFontData.Prefs)
 	}
@@ -491,8 +497,16 @@ const windowsAudioSampleRate = 48000
 // windowsChromeHeight 为 Windows 版 Camoufox 窗口中浏览器界面占用的高度
 const windowsChromeHeight = 85
 
-// windowsStorageLimit 为使站点存储配额取 Firefox 上限 10 GiB 的全局存储上限，单位 KB
+// windowsStorageLimit 为默认全局临时存储上限，单位 KB
 const windowsStorageLimit = 50 << 20
+
+// windowsStorageLimitFromConfig 读取指纹中持久化的临时存储配额上限（KB），缺失或无效时回退到 windowsStorageLimit
+func windowsStorageLimitFromConfig(config map[string]any) int {
+	if limit, ok := integer(config, quotaTemporaryLimitKey); ok && limit > 0 {
+		return limit
+	}
+	return windowsStorageLimit
+}
 
 // hostChromeHeight 为 macOS 与 Linux 版 Camoufox 窗口中浏览器界面占用的高度
 var hostChromeHeight = map[string]int{"darwin": 85, "linux": 86}[runtime.GOOS]
@@ -663,7 +677,7 @@ func firefoxPreferences(proxyValue, bypass string) (map[string]any, error) {
 		// network.process.enabled 为 false 时网络在主进程运行，不单独启动 socket 进程
 		"network.process.enabled": false,
 		// network.http.http2.ping-threshold 为 HTTP/2 连接没有收到数据多少秒后发送 PING 探测连接是否失效
-		"network.http.http2.ping-threshold": 10,
+		"network.http.http2.ping-threshold": 58,
 		// media.rdd-process.enabled 与 media.utility-process.enabled 为 false 时不单独启动 rdd 与媒体 utility 进程
 		"media.rdd-process.enabled":     false,
 		"media.utility-process.enabled": false,

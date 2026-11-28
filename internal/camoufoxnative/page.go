@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"math/rand/v2"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Mag1cFall/AIStudio2API/internal/waa/prooftime"
@@ -286,68 +288,295 @@ const (
 	rerunButtonSelector = `ms-chat-turn:last-of-type button[aria-label^="Rerun" i]`
 )
 
-// pointerTargetFunction 把 selector 匹配且文字或 aria-label 匹配 pattern 的第一个可见元素滚动到视口内，返回其中心坐标 JSON，没有时返回空字符串
-const pointerTargetFunction = `(selector, pattern) => {
+// pointerBoxHelper 把目标元素滚动到视口内并返回其可见边界盒与视口尺寸
+const pointerBoxHelper = `
+  const pointerBox = item => {
+    item.scrollIntoView({block: 'nearest', inline: 'nearest'});
+    const box = item.getBoundingClientRect();
+    const vw = window.innerWidth || Math.ceil(box.right);
+    const vh = window.innerHeight || Math.ceil(box.bottom);
+    const left = Math.max(0, box.left);
+    const top = Math.max(0, box.top);
+    const right = Math.min(vw, box.right);
+    const bottom = Math.min(vh, box.bottom);
+    const useVisible = right > left && bottom > top;
+    const x0 = useVisible ? left : box.left;
+    const y0 = useVisible ? top : box.top;
+    const w = useVisible ? right - left : Math.max(0, box.width);
+    const h = useVisible ? bottom - top : Math.max(0, box.height);
+    return {
+      x: Math.round(x0 + w / 2),
+      y: Math.round(y0 + h / 2),
+      w: Math.round(w),
+      h: Math.round(h),
+      vw: Math.round(vw),
+      vh: Math.round(vh)
+    };
+  };
+`
+
+// pointerTargetFunction 把 selector 匹配且文字或 aria-label 匹配 pattern 的第一个可见元素滚动到视口内，返回其中心坐标与可见边界盒 JSON，没有时返回空字符串
+const pointerTargetFunction = `(selector, pattern) => {` + pointerBoxHelper + `
   const expression = new RegExp(pattern, 'i');
   const item = [...document.querySelectorAll(selector)].find(node => node.checkVisibility({visibilityProperty: true}) && expression.test((node.innerText || node.getAttribute('aria-label') || '').trim()));
   if (!item) return '';
-  item.scrollIntoView({block: 'nearest', inline: 'nearest'});
-  const box = item.getBoundingClientRect();
-  return JSON.stringify({x: Math.round(box.left + box.width / 2), y: Math.round(box.top + box.height / 2)});
+  return JSON.stringify(pointerBox(item));
 }`
 
-// pointerMoveDuration 是可信指针从别处移到目标元素所用的毫秒数
+// pointerMoveDuration 是可信指针需要带移动过程时传入的基准毫秒数，实际移动时长会在执行时随机化
 const pointerMoveDuration = 120
 
-// pointer 以可信指针用 move 毫秒移到 selector 与 pattern 匹配的可见元素中心，click 为真时再按账户节奏停顿、按下、停顿并抬起，返回是否找到该元素
+type pointerTarget struct {
+	X  int `json:"x"`
+	Y  int `json:"y"`
+	W  int `json:"w"`
+	H  int `json:"h"`
+	VW int `json:"vw"`
+	VH int `json:"vh"`
+}
+
+type pointerPoint struct {
+	X int
+	Y int
+}
+
+// pointerPositions 按 contextID 记录可信指针最近一次落点，用于生成多段自然移动轨迹
+var pointerPositions = struct {
+	mu    sync.Mutex
+	byTab map[string]pointerPoint
+}{
+	byTab: make(map[string]pointerPoint),
+}
+
+const pointerPositionsCap = 512
+
+func lastPointerPosition(contextID string) (pointerPoint, bool) {
+	pointerPositions.mu.Lock()
+	defer pointerPositions.mu.Unlock()
+	point, ok := pointerPositions.byTab[contextID]
+	return point, ok
+}
+
+func savePointerPosition(contextID string, point pointerPoint) {
+	pointerPositions.mu.Lock()
+	defer pointerPositions.mu.Unlock()
+	if len(pointerPositions.byTab) >= pointerPositionsCap {
+		clear(pointerPositions.byTab)
+	}
+	pointerPositions.byTab[contextID] = point
+}
+
+// samplePointerAxis 在元素中心 ±25% 宽高内做近似高斯（两次均匀随机取中点）偏移，并限制在元素内部安全区
+func samplePointerAxis(center, size int) int {
+	if size <= 2 {
+		return center
+	}
+	start := center - size/2
+	end := start + size
+	margin := max(1, size/10)
+	low := start + margin
+	high := end - margin
+	if low > high {
+		return center
+	}
+	u := rand.Float64() + rand.Float64() - 1
+	offset := int(math.Round(u * float64(size) * 0.25))
+	return max(low, min(center+offset, high))
+}
+
+// samplePointerPoint 在目标可见边界盒的安全内框中采样随机落点
+func samplePointerPoint(target pointerTarget) pointerPoint {
+	x := samplePointerAxis(target.X, target.W)
+	y := samplePointerAxis(target.Y, target.H)
+	if target.VW > 0 {
+		x = max(0, min(x, target.VW-1))
+	} else {
+		x = max(0, x)
+	}
+	if target.VH > 0 {
+		y = max(0, min(y, target.VH-1))
+	} else {
+		y = max(0, y)
+	}
+	return pointerPoint{X: x, Y: y}
+}
+
+// clampViewportCoordinate 将轨迹中间点限制在视口合法坐标内，避免触发 BiDi 越界错误
+func clampViewportCoordinate(value, limit, fallbackMax int) int {
+	if value < 0 {
+		value = 0
+	}
+	if limit > 0 {
+		return min(value, limit-1)
+	}
+	if fallbackMax > 0 {
+		return min(value, fallbackMax)
+	}
+	return value
+}
+
+// buildPointerMoveActions 构造可信鼠标移动序列：move<=0 时单步直达；move>0 时以 90–199ms 随机总时长构造 2–3 段微弧度轨迹
+func buildPointerMoveActions(from pointerPoint, hasFrom bool, to pointerPoint, move, vw, vh int) []map[string]any {
+	if move <= 0 {
+		return []map[string]any{{"type": "pointerMove", "x": to.X, "y": to.Y, "duration": 0}}
+	}
+	totalDuration := 90 + rand.IntN(110)
+	start := from
+	if !hasFrom {
+		start = pointerPoint{X: 0, Y: 0}
+	}
+	dx := float64(to.X - start.X)
+	dy := float64(to.Y - start.Y)
+	dist := math.Hypot(dx, dy)
+	if dist < 4 {
+		return []map[string]any{{"type": "pointerMove", "x": to.X, "y": to.Y, "duration": totalDuration}}
+	}
+	segments := 2 + rand.IntN(2)
+	nx, ny := -dy/dist, dx/dist
+	sign := 1.0
+	if rand.IntN(2) == 0 {
+		sign = -1.0
+	}
+	bulge := min(dist*(0.04+rand.Float64()*0.08), 36.0)
+	cx := float64(start.X+to.X)/2 + sign*bulge*nx
+	cy := float64(start.Y+to.Y)/2 + sign*bulge*ny
+
+	var ts []float64
+	var durations []int
+	if segments == 2 {
+		t1 := 0.45 + rand.Float64()*0.15
+		d1 := int(math.Round(float64(totalDuration) * (0.45 + rand.Float64()*0.15)))
+		ts = []float64{t1, 1.0}
+		durations = []int{d1, totalDuration - d1}
+	} else {
+		t1 := 0.28 + rand.Float64()*0.10
+		t2 := 0.64 + rand.Float64()*0.12
+		d1 := int(math.Round(float64(totalDuration) * (0.30 + rand.Float64()*0.10)))
+		d2 := int(math.Round(float64(totalDuration) * (0.30 + rand.Float64()*0.10)))
+		ts = []float64{t1, t2, 1.0}
+		durations = []int{d1, d2, totalDuration - d1 - d2}
+	}
+
+	maxX := max(start.X, to.X)
+	maxY := max(start.Y, to.Y)
+	actions := make([]map[string]any, 0, segments)
+	for i, t := range ts {
+		var px, py int
+		if i == segments-1 {
+			px, py = to.X, to.Y
+		} else {
+			oneMinusT := 1 - t
+			bx := oneMinusT*oneMinusT*float64(start.X) + 2*oneMinusT*t*cx + t*t*float64(to.X)
+			by := oneMinusT*oneMinusT*float64(start.Y) + 2*oneMinusT*t*cy + t*t*float64(to.Y)
+			px = clampViewportCoordinate(int(math.Round(bx)), vw, maxX)
+			py = clampViewportCoordinate(int(math.Round(by)), vh, maxY)
+		}
+		actions = append(actions, map[string]any{
+			"type":     "pointerMove",
+			"x":        px,
+			"y":        py,
+			"duration": max(1, durations[i]),
+		})
+	}
+	return actions
+}
+
+// performPointer 以可信指针移到 target 安全内框随机落点，click 为真时按账户节奏按下并抬起，成功后记录当前落点
+func (client *bidiClient) performPointer(ctx context.Context, contextID string, target pointerTarget, click bool, move int) error {
+	destination := samplePointerPoint(target)
+	from, hasFrom := lastPointerPosition(contextID)
+	actions := buildPointerMoveActions(from, hasFrom, destination, move, target.VW, target.VH)
+	if click {
+		actions = append(actions, pause(client.rhythm.Press, pressOverhead), map[string]any{"type": "pointerDown", "button": 0}, pause(client.rhythm.Hold, holdOverhead), map[string]any{"type": "pointerUp", "button": 0})
+	}
+	if _, err := client.command(ctx, "input.performActions", map[string]any{
+		"context": contextID,
+		"actions": []map[string]any{{"type": "pointer", "id": "mouse", "parameters": map[string]any{"pointerType": "mouse"}, "actions": actions}},
+	}); err != nil {
+		return err
+	}
+	savePointerPosition(contextID, destination)
+	return nil
+}
+
+// pointer 以可信指针移到 selector 与 pattern 匹配的可见元素内部安全落点，click 为真时再按账户节奏停顿、按下、停顿并抬起，返回是否找到该元素
 func (client *bidiClient) pointer(ctx context.Context, contextID, selector, pattern string, click bool, move int) (bool, error) {
 	located, err := client.callFunctionString(ctx, contextID, pointerTargetFunction, selector, pattern)
 	if err != nil || located == "" {
 		return false, err
 	}
-	var target struct {
-		X int `json:"x"`
-		Y int `json:"y"`
-	}
+	var target pointerTarget
 	if err := json.Unmarshal([]byte(located), &target); err != nil {
 		return false, err
 	}
-	actions := []map[string]any{{"type": "pointerMove", "x": target.X, "y": target.Y, "duration": move}}
-	if click {
-		actions = append(actions, pause(client.rhythm.Press, pressOverhead), map[string]any{"type": "pointerDown", "button": 0}, pause(client.rhythm.Hold, holdOverhead), map[string]any{"type": "pointerUp", "button": 0})
-	}
-	_, err = client.command(ctx, "input.performActions", map[string]any{
-		"context": contextID,
-		"actions": []map[string]any{{"type": "pointer", "id": "mouse", "parameters": map[string]any{"pointerType": "mouse"}, "actions": actions}},
-	})
-	return true, err
+	return true, client.performPointer(ctx, contextID, target, click, move)
 }
 
-// dismissOverlaysExpression 关闭官网已知且可交互的启动弹层：G1 欢迎对话框、引导浏览浮层与 Cookie 提示条，提示条有拒绝按钮时拒绝，只有确认按钮时确认
-const dismissOverlaysExpression = `(() => {` + pageDOMHelpers + `
+// locateOverlaysExpression 查询官网已知且可交互的启动弹层按钮（G1 欢迎对话框、引导浏览浮层与 Cookie 提示条），仅返回待点击按钮的选择器与首个按钮可见边界盒，不执行非可信 button.click()
+const locateOverlaysExpression = `(() => {` + pageDOMHelpers + pointerBoxHelper + `
   const selectors = [
     'ms-g1-welcome-dialog button',
     'button.xap-tour-exit-button',
     '#glue-cookie-notification-bar-1 .glue-cookie-notification-bar__reject',
     '#glue-cookie-notification-bar-1:not(:has(.glue-cookie-notification-bar__reject)) .glue-cookie-notification-bar__accept'
   ];
-  let clicked = 0;
+  const matches = [];
   for (const selector of selectors) {
     const button = uniqueVisible(selector, '启动弹层按钮');
     if (button && buttonEnabled(button)) {
-      button.click();
-      clicked++;
+      const entry = {selector};
+      if (matches.length === 0) entry.target = pointerBox(button);
+      matches.push(entry);
     }
   }
-  return clicked;
+  return JSON.stringify(matches);
 })()`
 
-// dismissKnownOverlays 关闭官网已知启动弹层，返回点击的按钮数
+// locateOverlayButtonFunction 按 selector 重新定位单个可见且可交互的启动弹层按钮可见边界盒
+const locateOverlayButtonFunction = `selector => {` + pageDOMHelpers + pointerBoxHelper + `
+  const button = uniqueVisible(selector, '启动弹层按钮');
+  if (!button || !buttonEnabled(button)) return '';
+  return JSON.stringify(pointerBox(button));
+}`
+
+type overlayMatch struct {
+	Selector string         `json:"selector"`
+	Target   *pointerTarget `json:"target,omitempty"`
+}
+
+// dismissKnownOverlays 以可信鼠标点击关闭官网已知启动弹层，返回点击的按钮数
 func dismissKnownOverlays(ctx context.Context, client *bidiClient, contextID string) (int, error) {
-	clicked, err := client.evaluate(ctx, contextID, dismissOverlaysExpression)
+	raw, err := client.evaluateString(ctx, contextID, locateOverlaysExpression)
 	if err != nil {
 		return 0, fmt.Errorf("处理 AI Studio 启动覆盖层: %w", err)
 	}
-	count, _ := number(clicked["value"])
-	return int(count), nil
+	var matches []overlayMatch
+	if raw != "" {
+		if err := json.Unmarshal([]byte(raw), &matches); err != nil {
+			return 0, fmt.Errorf("解析 AI Studio 启动覆盖层目标: %w", err)
+		}
+	}
+	clicked := 0
+	for index, match := range matches {
+		var target pointerTarget
+		if index == 0 && match.Target != nil {
+			target = *match.Target
+		} else {
+			located, err := client.callFunctionString(ctx, contextID, locateOverlayButtonFunction, match.Selector)
+			if err != nil {
+				return clicked, fmt.Errorf("定位 AI Studio 启动覆盖层 %s: %w", match.Selector, err)
+			}
+			if located == "" {
+				continue
+			}
+			if err := json.Unmarshal([]byte(located), &target); err != nil {
+				return clicked, fmt.Errorf("解析 AI Studio 启动覆盖层 %s 目标: %w", match.Selector, err)
+			}
+		}
+		if err := client.performPointer(ctx, contextID, target, true, pointerMoveDuration); err != nil {
+			return clicked, fmt.Errorf("点击 AI Studio 启动覆盖层 %s: %w", match.Selector, err)
+		}
+		clicked++
+	}
+	return clicked, nil
 }

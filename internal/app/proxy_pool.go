@@ -3,6 +3,9 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 	"strings"
 	"time"
@@ -15,10 +18,10 @@ import (
 // proxyProbeInterval 为代理池的定时检测间隔
 const proxyProbeInterval = 5 * time.Minute
 
-// proxyProbeTarget 为代理检测建立隧道的地址
-const proxyProbeTarget = "aistudio.google.com:443"
+// proxyProbeURL 为代理检测请求的轻量连通性地址
+const proxyProbeURL = "https://connectivitycheck.gstatic.com/generate_204"
 
-// checkProxy 经代理建立到 AI Studio 的隧道，建立成功即判定代理可用
+// checkProxy 经代理向 connectivitycheck.gstatic.com/generate_204 发起完整 HTTPS 请求，返回 2xx 即判定代理可用
 func checkProxy(ctx context.Context, proxy string) error {
 	parsed, err := url.Parse(strings.TrimSpace(proxy))
 	if err != nil {
@@ -30,11 +33,25 @@ func checkProxy(ctx context.Context, proxy string) error {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	connection, err := dialer.DialContext(ctx, "tcp", proxyProbeTarget)
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	transport.DialContext = dialer.DialContext
+	transport.DisableKeepAlives = true
+	defer transport.CloseIdleConnections()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, proxyProbeURL, nil)
 	if err != nil {
 		return err
 	}
-	return connection.Close()
+	response, err := (&http.Client{Transport: transport}).Do(request)
+	if err != nil {
+		return err
+	}
+	_, _ = io.Copy(io.Discard, response.Body)
+	_ = response.Body.Close()
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return fmt.Errorf("代理连通性检测返回 HTTP %d", response.StatusCode)
+	}
+	return nil
 }
 
 // proxyNetworkError 判断请求失败是否为经代理的网络错误

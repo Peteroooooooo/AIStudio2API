@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"math/rand/v2"
 	"net/http"
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
+	"time"
 )
 
 // StaticFetcher 经账户出口读取官网静态资源
@@ -87,7 +90,45 @@ func (frontend frontendModels) template(catalog modelCatalog, modelID string) (m
 	return modelEntry{}, false
 }
 
-// DiscoverHiddenModels 从账户页面载入的官网前端主程序与对话页分块找出 ListModels 没有列出的推荐模型，经 CountTokens 确认可用后加入账户目录，返回隐藏模型 ID 到依据模型 ID 的映射
+var hiddenProbePrompts = []string{"hi", "hello", "test", "ok", "hey"}
+
+type hiddenModelProbe struct {
+	mu        sync.Mutex
+	done      bool
+	available bool
+}
+
+type frontendBundleCache struct {
+	mu       sync.Mutex
+	loaded   bool
+	models   frontendModels
+	probesMu sync.Mutex
+	probes   map[string]*hiddenModelProbe
+}
+
+func (cache *frontendBundleCache) probeFor(modelID string) *hiddenModelProbe {
+	cache.probesMu.Lock()
+	defer cache.probesMu.Unlock()
+	probe := cache.probes[modelID]
+	if probe == nil {
+		probe = &hiddenModelProbe{}
+		cache.probes[modelID] = probe
+	}
+	return probe
+}
+
+func (c *Client) frontendEntry(bundle string) *frontendBundleCache {
+	c.frontendMu.Lock()
+	defer c.frontendMu.Unlock()
+	entry := c.frontend[bundle]
+	if entry == nil {
+		entry = &frontendBundleCache{probes: make(map[string]*hiddenModelProbe)}
+		c.frontend[bundle] = entry
+	}
+	return entry
+}
+
+// DiscoverHiddenModels 从账户页面载入的官网前端主程序与对话页分块找出 ListModels 没有列出的推荐模型，同一前端版本全局只探测一次可用性，确认可用后加入各账户目录，返回隐藏模型 ID 到依据模型 ID 的映射
 func (c *Client) DiscoverHiddenModels(ctx context.Context, accountID string) (map[string]string, error) {
 	c.catalogMu.RLock()
 	catalog := c.catalogs[accountID]
@@ -99,7 +140,9 @@ func (c *Client) DiscoverHiddenModels(ctx context.Context, accountID string) (ma
 	if err != nil {
 		return nil, err
 	}
+	entry := c.frontendEntry(catalog.bundle)
 	hidden := make(map[string]string)
+	probedLive := false
 	for _, modelID := range frontend.models {
 		if _, listed := catalog.lookup(modelID); listed {
 			continue
@@ -109,20 +152,53 @@ func (c *Client) DiscoverHiddenModels(ctx context.Context, accountID string) (ma
 			slog.Warn("官网隐藏模型没有同类的已列出模型可作目录依据", "account", accountID, "model", modelID)
 			continue
 		}
-		_, err := c.CountTokensForAccount(ctx, accountID, TokenCountRequest{Model: modelID, Contents: []Content{{Role: RoleUser, Parts: []Part{{Text: "ok"}}}}})
-		var rpcErr *RPCError
-		if errors.As(err, &rpcErr) && rpcErr.StatusCode == http.StatusNotFound {
-			continue
+		available, usedNetwork, err := c.probeHiddenModel(ctx, accountID, entry, modelID, probedLive)
+		if usedNetwork {
+			probedLive = true
 		}
 		if err != nil {
 			return nil, fmt.Errorf("探测官网隐藏模型 %s: %w", modelID, err)
 		}
-		hidden[modelID] = template.model.ID
+		if available {
+			hidden[modelID] = template.model.ID
+		}
 	}
 	c.catalogMu.Lock()
 	c.catalogs[accountID] = c.catalogs[accountID].withHidden(hidden)
 	c.catalogMu.Unlock()
 	return hidden, nil
+}
+
+func (c *Client) probeHiddenModel(ctx context.Context, accountID string, entry *frontendBundleCache, modelID string, waitBefore bool) (available bool, usedNetwork bool, err error) {
+	probe := entry.probeFor(modelID)
+	probe.mu.Lock()
+	defer probe.mu.Unlock()
+	if probe.done {
+		return probe.available, false, nil
+	}
+	if waitBefore {
+		timer := time.NewTimer(150*time.Millisecond + rand.N(350*time.Millisecond))
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+			return false, false, ctx.Err()
+		}
+	}
+	text := hiddenProbePrompts[rand.IntN(len(hiddenProbePrompts))]
+	_, err = c.CountTokensForAccount(ctx, accountID, TokenCountRequest{Model: modelID, Contents: []Content{{Role: RoleUser, Parts: []Part{{Text: text}}}}})
+	var rpcErr *RPCError
+	if errors.As(err, &rpcErr) && rpcErr.StatusCode == http.StatusNotFound {
+		probe.available = false
+		probe.done = true
+		return false, true, nil
+	}
+	if err != nil {
+		return false, true, err
+	}
+	probe.available = true
+	probe.done = true
+	return true, true, nil
 }
 
 // frontendChatChunk 返回官网前端主程序地址对应的对话页分块地址，与页面按需载入时一样排除主程序模块
@@ -132,11 +208,11 @@ func frontendChatChunk(bundle string, module string) string {
 
 // frontendModels 返回官网前端主程序与对话页分块中的推荐模型，同一主程序地址只经账户出口下载与解析一次
 func (c *Client) frontendModels(ctx context.Context, accountID string, bundle string) (frontendModels, error) {
-	c.frontendMu.Lock()
-	parsed, ok := c.frontend[bundle]
-	c.frontendMu.Unlock()
-	if ok {
-		return parsed, nil
+	entry := c.frontendEntry(bundle)
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+	if entry.loaded {
+		return entry.models, nil
 	}
 	source, err := c.static.FetchStatic(ctx, accountID, bundle)
 	if err != nil {
@@ -150,10 +226,9 @@ func (c *Client) frontendModels(ctx context.Context, accountID string, bundle st
 	if err != nil {
 		return frontendModels{}, fmt.Errorf("下载官网对话页分块: %w", err)
 	}
-	parsed = parseFrontendModels(append(source, chunk...))
-	c.frontendMu.Lock()
-	c.frontend[bundle] = parsed
-	c.frontendMu.Unlock()
+	parsed := parseFrontendModels(append(source, chunk...))
+	entry.models = parsed
+	entry.loaded = true
 	return parsed, nil
 }
 

@@ -96,7 +96,7 @@ func EncodeBuildGenerateRequest(request GenerateRequest, defaults GenerationDefa
 	if len(config) > 0 {
 		body["generationConfig"] = config
 	}
-	safety, err := resolveSafetySettings(request.SafetySettings, imageRoute)
+	safety, err := resolveSafetySettings(request.SafetySettings)
 	if err != nil {
 		return "", nil, err
 	}

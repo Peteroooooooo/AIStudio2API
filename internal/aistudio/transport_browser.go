@@ -301,7 +301,7 @@ func newBrowserRoundTripper(proxyURL string) (stdhttp.RoundTripper, error) {
 	pool := &firefoxConnPool{
 		dial: func(ctx context.Context, address string, anonymous bool, timing *connectionTiming) (net.Conn, error) {
 			proxyDialer := timing.dialer(proxyDialer, sessions.tunnel)
-			return dialBrowserTLS(ctx, proxyDialer, sessions, address, anonymous)
+			return dialBrowserTLS(ctx, proxyDialer, sessions, address, anonymous, timing)
 		},
 		conns:       map[string][]*http2.ClientConn{},
 		experienced: map[*http2.ClientConn]bool{},
@@ -339,6 +339,8 @@ type connectionTiming struct {
 	connectStart, connectDone time.Time
 	// tunneled 是 HTTP 代理返回 CONNECT 应答的时刻，直连与 SOCKS5 代理时为零值
 	tunneled time.Time
+	// tlsStart 与 tlsDone 是与目标主机完成 TLS 握手的起止时刻
+	tlsStart, tlsDone time.Time
 }
 
 // dialer 返回记录各阶段时刻的拨号器，tunnel 表示经 HTTP 代理的 CONNECT 隧道，timing 为 nil 时原样返回
@@ -626,7 +628,7 @@ func (sessions handshakeSessions) Put(_ string, session *tls.ClientSessionState)
 }
 
 // dialBrowserTLS 以 Firefox ClientHello 建立 TLS 连接并要求协商 HTTP/2，拨号与 TLS 握手随 ctx 取消而中止（握手另套 30 秒上限），按 Firefox 取票据的时机在建 socket 时与 CONNECT 隧道建立后取用会话票据
-func dialBrowserTLS(ctx context.Context, dialer proxy.ContextDialer, sessions *firefoxSessionCache, address string, anonymous bool) (net.Conn, error) {
+func dialBrowserTLS(ctx context.Context, dialer proxy.ContextDialer, sessions *firefoxSessionCache, address string, anonymous bool, timing *connectionTiming) (net.Conn, error) {
 	host, _, _ := net.SplitHostPort(address)
 	peer := firefoxSessionPeer{host: host, anonymous: anonymous}
 	session, psk := sessions.take(peer)
@@ -647,12 +649,18 @@ func dialBrowserTLS(ctx context.Context, dialer proxy.ContextDialer, sessions *f
 	connection := tls.UClient(raw, &tls.Config{ServerName: host, OmitEmptyPsk: true, ClientSessionCache: handshakeSessions{sessions, peer, session}}, firefox158ClientHello(psk), false, false, false)
 	handshakeCtx, cancel := context.WithTimeout(ctx, firefoxTLSHandshakeTimeout)
 	defer cancel()
+	if timing != nil {
+		timing.mark(&timing.tlsStart)
+	}
 	if err := connection.HandshakeContext(handshakeCtx); err != nil {
 		_ = connection.Close()
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
 		return nil, err
+	}
+	if timing != nil {
+		timing.mark(&timing.tlsDone)
 	}
 	if protocol := connection.ConnectionState().NegotiatedProtocol; protocol != http2.NextProtoTLS {
 		_ = connection.Close()

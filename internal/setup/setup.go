@@ -582,11 +582,11 @@ func parseSetupFlags(args []string, cfg config.Config) (setupOptions, error) {
 	return options, nil
 }
 
-// exitEnvironment 返回账户语言与时区：未用 --locale、--timezone 指定的项按 setup 出口的地理位置填写，查询出口失败时取本机的语言与时区并写入 WARN 日志
+// exitEnvironment 返回账户语言与时区：未用 --locale、--timezone 指定的项按 setup 出口的地理位置填写，查询出口失败时使用中性默认值并写入 WARN 日志
 func exitEnvironment(ctx context.Context, options setupOptions) (string, string) {
 	exit, err := egress.Environment(ctx, options.egress, options.locale, options.timezone)
 	if err != nil {
-		slog.Warn("查询出口位置失败，账户语言与时区使用本机设置", "locale", exit.Locale, "timezone", exit.Timezone, "error", err)
+		slog.Warn("查询出口位置失败，账户语言与时区使用中性默认值", "locale", exit.Locale, "timezone", exit.Timezone, "error", err)
 	} else if exit.IP != "" {
 		fmt.Fprintf(i18n.Stdout, "按出口 %s（%s）设置账户语言 %s、时区 %s\n", exit.IP, exit.Country, exit.Locale, exit.Timezone)
 	}

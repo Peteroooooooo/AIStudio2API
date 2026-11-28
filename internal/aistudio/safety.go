@@ -77,14 +77,12 @@ var harmThresholds = map[string]int64{
 	"BLOCK_LOW_AND_ABOVE": 1, "BLOCK_MEDIUM_AND_ABOVE": 2, "BLOCK_ONLY_HIGH": 3, "BLOCK_NONE": 4, "OFF": 5,
 }
 
-// resolveSafetySettings 校验请求的安全设置，按类别编号返回最终阈值；非图片模型未指定的官网类别为 OFF
-func resolveSafetySettings(settings []SafetySetting, imageRoute bool) ([]SafetySetting, error) {
-	thresholds := map[string]string{}
-	if !imageRoute {
-		for _, category := range harmCategories[:4] {
-			thresholds[category.name] = "OFF"
-		}
+// resolveSafetySettings 校验请求的安全设置，按类别编号返回客户端显式指定的阈值；未指定的类别不额外覆盖，沿用上游默认行为
+func resolveSafetySettings(settings []SafetySetting) ([]SafetySetting, error) {
+	if len(settings) == 0 {
+		return nil, nil
 	}
+	thresholds := map[string]string{}
 	for _, setting := range settings {
 		category := strings.ToUpper(strings.TrimSpace(setting.Category))
 		threshold := strings.ToUpper(strings.TrimSpace(setting.Threshold))

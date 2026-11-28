@@ -230,14 +230,13 @@ func (t *MakerSuiteHTTPTransport) UploadAssistantFile(ctx context.Context, accou
 		}
 		header.Set("User-Agent", public.Get("User-Agent"))
 		header.Set("Accept", "*/*")
+		header.Set("Accept-Encoding", "gzip, deflate, br, zstd")
 		header.Set("Origin", aiStudioOrigin)
 		header.Set("Referer", aiStudioOrigin+"/")
 		header.Set("Sec-Fetch-Dest", "empty")
 		header.Set("Sec-Fetch-Mode", "cors")
 		header.Set("Sec-Fetch-Site", "same-origin")
-		if account.Config.AuthUser > 0 {
-			header.Set("X-Goog-Authuser", strconv.Itoa(account.Config.AuthUser))
-		}
+		header.Set("X-Goog-Authuser", strconv.Itoa(account.Config.AuthUser))
 		if language := account.AcceptLanguage(); language != "" {
 			header.Set("Accept-Language", language)
 		}
@@ -368,6 +367,17 @@ func (t *MakerSuiteHTTPTransport) FetchStatic(ctx context.Context, accountID str
 		return nil, err
 	}
 	request.Header.Set("User-Agent", publicDiscoveryUserAgent)
+	request.Header.Set("Accept", "*/*")
+	language := account.AcceptLanguage()
+	if language == "" {
+		language = "en-US,en;q=0.5"
+	}
+	request.Header.Set("Accept-Language", language)
+	request.Header.Set("Accept-Encoding", "gzip, deflate, br, zstd")
+	request.Header.Set("Referer", aiStudioOrigin+"/")
+	request.Header.Set("Sec-Fetch-Dest", "script")
+	request.Header.Set("Sec-Fetch-Mode", "no-cors")
+	request.Header.Set("Sec-Fetch-Site", fetchSite(address))
 	response, err := sendHTTP(client, request)
 	if err != nil {
 		return nil, err

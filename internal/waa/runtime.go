@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"math/rand/v2"
 	"strings"
 	"sync"
 	"time"
@@ -149,7 +150,21 @@ const newChatElements = `
 // result 与 submit 为最后一轮函数调用块中的函数响应输入框与提交按钮
 // 焦点位置 prompt 为提示词输入框，result 为函数响应输入框，run、rerun 与 submit 为对应按钮
 // 元素矩形按官网新对话页的布局，取值按 Firefox 以单精度浮点返回
-const pointerScript = `((input, from, to, blurred, focused, rounds, types) => {` + promptElements + functionElements + settingsElements + newChatElements + `
+const pointerScript = `(() => {
+  let lastPoint = null;
+  let lastTo = '';
+  const jitterPoint = spot => {
+    const [bx, by] = spot.point;
+    const rect = spot.rects && spot.rects[0];
+    let px = bx + Math.floor(Math.random() * 5) - 2;
+    let py = by + Math.floor(Math.random() * 5) - 2;
+    if (rect && rect[2] > 2 && rect[3] > 2) {
+      px = Math.min(Math.max(px, Math.ceil(rect[0] + 1)), Math.floor(rect[0] + rect[2] - 1));
+      py = Math.min(Math.max(py, Math.ceil(rect[1] + 1)), Math.floor(rect[1] + rect[3] - 1));
+    }
+    return [px, py];
+  };
+  return (input, from, to, blurred, focused, rounds, types) => {` + promptElements + functionElements + settingsElements + newChatElements + `
   const section = innerWidth - 520;
   const box = Math.min(section, 1000);
   const left = 220 + (section - box) / 2;
@@ -198,9 +213,53 @@ const pointerScript = `((input, from, to, blurred, focused, rounds, types) => {`
   spots.category = { target: category, point: discardPoint, nodes: [category], rects: [[discardPoint[0] - 120, discardPoint[1] - 40, 240, 80]] };
   const focusable = { prompt: textarea, run, rerun, result: field, submit: send, newchat: toolbar, dialog, selector: settings('selector'), row: settings('row'), level: settings('level'), option: settings('option'), system: settings('system'), instructions: settings('instructions'), close: settings('close'), grounding: settings('grounding'), functions: settings('functions'), edit: settings('edit'), declarations: settings('declarations'), save: settings('save'), all: settings('all') };
   const spot = spots[to];
-  const movement = from ? [spot.point[0] - spots[from].point[0], spot.point[1] - spots[from].point[1]] : [0, 0];
-  input(spot.nodes, spot.rects, spot.target, from ? spots[from].target : null, spot.point, movement, focusable[blurred] ?? null, focusable[focused] ?? null, types);
-})`
+  const fromSpot = from ? spots[from] : null;
+  let point = spot.point;
+  let movement = [0, 0];
+  let target = spot.target;
+  const leftNode = fromSpot ? fromSpot.target : null;
+  let nodes = spot.nodes;
+  let rects = spot.rects;
+  if (fromSpot && from !== to && types.length > 0 && types[0] === 'pointermove') {
+    const origin = lastPoint ?? fromSpot.point;
+    const frac = 0.35 + Math.random() * 0.35;
+    const next = [
+      Math.round(origin[0] + (spot.point[0] - origin[0]) * frac) + Math.floor(Math.random() * 5) - 2,
+      Math.round(origin[1] + (spot.point[1] - origin[1]) * frac) + Math.floor(Math.random() * 5) - 2,
+    ];
+    movement = [next[0] - origin[0], next[1] - origin[1]];
+    point = next;
+    lastPoint = next;
+    target = fromSpot.target;
+    nodes = fromSpot.nodes;
+    rects = fromSpot.rects;
+  } else if (types.includes('pointermove')) {
+    const prev = lastPoint ?? (fromSpot ? fromSpot.point : null);
+    if (from === to && lastPoint) {
+      const rect = spot.rects && spot.rects[0];
+      let px = lastPoint[0] + Math.floor(Math.random() * 3) - 1;
+      let py = lastPoint[1] + Math.floor(Math.random() * 3) - 1;
+      if (rect && rect[2] > 2 && rect[3] > 2) {
+        px = Math.min(Math.max(px, Math.ceil(rect[0] + 1)), Math.floor(rect[0] + rect[2] - 1));
+        py = Math.min(Math.max(py, Math.ceil(rect[1] + 1)), Math.floor(rect[1] + rect[3] - 1));
+      }
+      point = [px, py];
+    } else {
+      point = jitterPoint(spot);
+    }
+    if (prev) movement = [point[0] - prev[0], point[1] - prev[1]];
+    lastPoint = point;
+    lastTo = to;
+  } else if (lastTo === to && lastPoint) {
+    point = lastPoint;
+  } else {
+    point = jitterPoint(spot);
+    lastPoint = point;
+    lastTo = to;
+  }
+  input(nodes, rects, target, leftNode, point, movement, focusable[blurred] ?? null, focusable[focused] ?? null, types);
+};
+})()`
 
 // keyScript 以宿主的 keyInput 向提示词输入框（target 为 result 时向函数响应输入框）派发一组可信键盘与输入事件，读取输入框的值并返回它是否与 text 相同
 const keyScript = `((input, text, types, target) => {` + promptElements + functionElements + settingsElements + `
@@ -226,15 +285,52 @@ const rerunHover = time.Second
 // streamFrame 是 Firefox 在内容移动后为静止指针补发离开与进入事件的最小间隔，即 60 Hz 下的一帧
 const streamFrame = 16 * time.Millisecond
 
-// click 返回以可信指针移到 to、按账户节奏按下再抬起的各步
+// jitterDuration 在 base 上叠加 0.88–1.12 倍的随机微抖动
+func jitterDuration(base time.Duration) time.Duration {
+	if base <= 0 {
+		return base
+	}
+	return max(time.Millisecond, time.Duration(float64(base)*(0.88+0.24*rand.Float64())))
+}
+
+// jitterRhythm 在账号节奏毫秒基准上叠加 0.88–1.12 倍的随机微抖动
+func jitterRhythm(milliseconds float64) time.Duration {
+	return jitterDuration(rhythm.Duration(milliseconds))
+}
+
+// withMoveDelay 在不增加总时长的前提下，把进入目标位置前的等待拆出 1–2 个中间移动步
+func withMoveDelay(steps []pointerStep, delay time.Duration) []pointerStep {
+	if len(steps) == 0 || steps[0].action != "move" || delay < 40*time.Millisecond {
+		if len(steps) > 0 {
+			steps[0].delay = delay
+		}
+		return steps
+	}
+	target := steps[0].to
+	gap1 := time.Duration(12+rand.IntN(13)) * time.Millisecond
+	if delay >= 80*time.Millisecond {
+		gap2 := time.Duration(12+rand.IntN(13)) * time.Millisecond
+		steps[0].delay = gap2
+		return append([]pointerStep{{delay - gap1 - gap2, "glide", target}, {gap1, "glide", target}}, steps...)
+	}
+	steps[0].delay = gap1
+	return append([]pointerStep{{delay - gap1, "glide", target}}, steps...)
+}
+
+// click 返回以可信指针移到 to、按账户节奏叠加微抖动后按下再抬起的各步；按下前间隔足够时拆分一次不增加总时长的微调移动
 func (runtime *Runtime) click(to string) []pointerStep {
-	return []pointerStep{{0, "move", to}, {rhythm.Duration(runtime.rhythm.Press), "press", ""}, {rhythm.Duration(runtime.rhythm.Hold), "release", ""}}
+	press := jitterRhythm(runtime.rhythm.Press)
+	hold := jitterRhythm(runtime.rhythm.Hold)
+	if press >= 6*time.Millisecond {
+		settle := press / 2
+		return []pointerStep{{0, "move", to}, {settle, "move", to}, {press - settle, "press", ""}, {hold, "release", ""}}
+	}
+	return []pointerStep{{0, "move", to}, {press, "press", ""}, {hold, "release", ""}}
 }
 
 // rerunClick 返回把指针移到最后一轮中心、等 Rerun 按钮出现后以同样方式点击它的各步
 func (runtime *Runtime) rerunClick() []pointerStep {
-	steps := runtime.click("rerun")
-	steps[0].delay = rerunHover
+	steps := withMoveDelay(runtime.click("rerun"), jitterDuration(rerunHover))
 	return append([]pointerStep{{0, "move", "turn"}}, steps...)
 }
 
@@ -247,13 +343,13 @@ type keyStep struct {
 // pasteLead 是焦点进入输入框到按下 Control 的间隔
 const pasteLead = 10 * time.Millisecond
 
-// pasteKeys 返回按账户节奏在官网输入框按 Ctrl+V 粘贴的各组事件：按下 Control，再按下 V 并粘贴，抬起 V，抬起 Control
+// pasteKeys 返回按账户节奏叠加微抖动后在官网输入框按 Ctrl+V 粘贴的各组事件：按下 Control，再按下 V 并粘贴，抬起 V，抬起 Control
 func (runtime *Runtime) pasteKeys() []keyStep {
 	return []keyStep{
-		{pasteLead, []string{"keydown:Control"}},
-		{rhythm.Duration(runtime.rhythm.Control), []string{"keydown:v", "paste", "beforeinput", "input"}},
-		{rhythm.Duration(runtime.rhythm.Key), []string{"keyup:v"}},
-		{rhythm.Duration(runtime.rhythm.Release), []string{"keyup:Control"}},
+		{jitterDuration(pasteLead), []string{"keydown:Control"}},
+		{jitterRhythm(runtime.rhythm.Control), []string{"keydown:v", "paste", "beforeinput", "input"}},
+		{jitterRhythm(runtime.rhythm.Key), []string{"keyup:v"}},
+		{jitterRhythm(runtime.rhythm.Release), []string{"keyup:Control"}},
 	}
 }
 
@@ -266,6 +362,13 @@ func (pointer *Pointer) events(step pointerStep, at time.Time) (from, to, blurre
 	defer pointer.mu.Unlock()
 	from, to, blurred, focused, rounds = pointer.at, pointer.at, pointer.focus, pointer.focus, pointer.rounds
 	switch step.action {
+	case "glide":
+		if from == "" || from == step.to {
+			return
+		}
+		to = step.to
+		types = []string{"pointermove", "mousemove"}
+		return
 	case "move":
 		to = step.to
 		switch from {
@@ -849,8 +952,7 @@ type SettingStep struct {
 // 各步按 VM 时钟排进此前的空闲区间，空闲不够时只真实等待差额
 func (runtime *Runtime) RunProofAfter(ctx context.Context, digest string, prompt string, newChat func(at time.Time), groups [][]SettingStep, back time.Duration) (string, error) {
 	return runtime.proof(ctx, digest, prompt, func(text string, idle float64) []action {
-		click := runtime.click("prompt")
-		click[0].delay = back
+		click := withMoveDelay(runtime.click("prompt"), back)
 		resume := append(runtime.pointerActions(click), runtime.pasteInto("prompt", text)...)
 		var settings []action
 		done := 0
@@ -909,8 +1011,7 @@ const (
 // newChatActions 返回点顶栏 New chat、焦点移入确认框、遮罩出现在指针下、点 Discard and continue、新对话页提示词输入框取得焦点、确认框移除的各步，点击确认后以 click 事件发生时的 VM 墙上时刻调用 discarded
 func (runtime *Runtime) newChatActions(discarded func(at time.Time)) []action {
 	actions := runtime.pointerActions(runtime.click("newchat"))
-	confirm := runtime.click("discard")
-	confirm[0].delay = newChatDiscardMove
+	confirm := withMoveDelay(runtime.click("discard"), jitterDuration(newChatDiscardMove))
 	actions = append(actions, runtime.pointerActions([]pointerStep{{newChatDialogFocus, "focus", "dialog"}, {newChatBackdrop, "cover", "backdrop"}})...)
 	confirmed := runtime.pointerActions(confirm)
 	release := confirmed[len(confirmed)-1].run
@@ -929,8 +1030,7 @@ func (runtime *Runtime) newChatActions(discarded func(at time.Time)) []action {
 func (runtime *Runtime) settingActions(steps []SettingStep) []action {
 	var actions []action
 	for _, step := range steps {
-		click := runtime.click(step.To)
-		click[0].delay = step.Wait
+		click := withMoveDelay(runtime.click(step.To), step.Wait)
 		pointer := runtime.pointerActions(click)
 		if step.Clicked != nil {
 			release := pointer[len(pointer)-1].run
@@ -1054,7 +1154,7 @@ func (runtime *Runtime) proof(ctx context.Context, digest string, prompt string,
 	var delay time.Duration
 	if click != nil {
 		tail = runtime.pointerActions(click)
-		delay = rhythm.Duration(runtime.rhythm.Proof)
+		delay = jitterRhythm(runtime.rhythm.Proof)
 	}
 	result := make(chan snapshotResult, 1)
 	var computeStarted time.Time

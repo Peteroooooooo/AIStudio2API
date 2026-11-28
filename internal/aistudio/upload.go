@@ -12,6 +12,7 @@ import (
 	"hash"
 	"io"
 	"log/slog"
+	"math/rand/v2"
 	"mime"
 	"net/http"
 	"net/url"
@@ -30,12 +31,25 @@ const driveAPIBase = "https://www.googleapis.com/drive/v3/files"
 // driveUploadURL 是官网 gapi 上传 Drive 文件的地址，其后接页面的 API key
 const driveUploadURL = "https://content.googleapis.com/upload/drive/v3/files?uploadType=multipart&key="
 
-// driveDiscoveryURL 是 gapi 加载 Drive v3 时读取 discovery 文档的地址，%s 为页面的 API key
-const driveDiscoveryURL = "https://clients6.google.com/discovery/v1/apis/drive/v3/rest?pp=0&fields=kind%%2Cname%%2Cversion%%2CrootUrl%%2CservicePath%%2Cresources%%2Cparameters%%2Cmethods%%2CbatchPath%%2Cid&key=%s&%%24unique=gc953"
+// driveDiscoveryURL 是 gapi 加载 Drive v3 时读取 discovery 文档的地址，参数依次为页面的 API key 与随机 $unique
+const driveDiscoveryURL = "https://clients6.google.com/discovery/v1/apis/drive/v3/rest?pp=0&fields=kind%%2Cname%%2Cversion%%2CrootUrl%%2CservicePath%%2Cresources%%2Cparameters%%2Cmethods%%2CbatchPath%%2Cid&key=%s&%%24unique=%s"
 
-// gapiBoundary 是官网 gapi 多部分上传的分隔串
-const gapiBoundary = "uhgzr7onafciig6fij3kisl4q"
 const driveResumableUploadURL = "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id"
+
+func newGAPIBoundary() string {
+	const alphabet = "0123456789abcdefghijklmnopqrstuvwxyz"
+	var buf [24]byte
+	copy(buf[:], "gapi")
+	for i := 4; i < len(buf); i++ {
+		buf[i] = alphabet[rand.IntN(len(alphabet))]
+	}
+	return string(buf[:])
+}
+
+func newGAPIUnique() string {
+	return "gc" + strconv.Itoa(100+rand.IntN(9900))
+}
+
 const driveUploadChunkSize = 8 << 20
 const driveCleanupTimeout = 5 * time.Second
 
@@ -1336,7 +1350,8 @@ func (t *MakerSuiteHTTPTransport) UploadDrive(ctx context.Context, accountID str
 		return FileRef{}, err
 	}
 	if request.Size < 0 {
-		return uploadDriveResumable(ctx, client, token, request)
+		browserHeaders := t.driveBrowserHeaders(ctx, lease.Account())
+		return uploadDriveResumable(ctx, client, token, browserHeaders, request)
 	}
 	headers, apiKey, err := t.gapiHeaders(ctx, lease.Account())
 	if err != nil {
@@ -1347,6 +1362,33 @@ func (t *MakerSuiteHTTPTransport) UploadDrive(ctx context.Context, accountID str
 	}
 	headers.Set("Authorization", "Bearer "+token)
 	return uploadDriveMultipart(ctx, client, driveUploadURL+url.QueryEscape(apiKey), headers, request)
+}
+
+// driveBrowserHeaders 返回与当前账户一致的 Drive API 浏览器请求头，动态公共头不可用时回退到公开 Firefox User-Agent
+func (t *MakerSuiteHTTPTransport) driveBrowserHeaders(ctx context.Context, account *Account) http.Header {
+	userAgent := publicDiscoveryUserAgent
+	if t.headers != nil && account != nil {
+		if public, err := t.headers.ProtocolHeaders(ctx, account.ID); err == nil && public != nil {
+			if ua := strings.TrimSpace(public.Get("User-Agent")); ua != "" {
+				userAgent = ua
+			}
+		}
+	}
+	headers := http.Header{}
+	headers.Set("User-Agent", userAgent)
+	headers.Set("Accept", "*/*")
+	if account != nil {
+		if language := account.AcceptLanguage(); language != "" {
+			headers.Set("Accept-Language", language)
+		}
+	}
+	headers.Set("Accept-Encoding", "gzip, deflate, br, zstd")
+	headers.Set("Origin", aiStudioOrigin)
+	headers.Set("Referer", aiStudioOrigin+"/")
+	headers.Set("Sec-Fetch-Dest", "empty")
+	headers.Set("Sec-Fetch-Mode", "cors")
+	headers.Set("Sec-Fetch-Site", "cross-site")
+	return headers
 }
 
 // clientDetails 返回官网页面 gapi 请求的 X-ClientDetails：按 encodeURIComponent 写出的 appVersion、platform 与 User-Agent
@@ -1417,7 +1459,7 @@ func (t *MakerSuiteHTTPTransport) readDriveDiscovery(ctx context.Context, accoun
 
 // getDriveDiscovery 以页面 gapi 的请求形状、页面的登录凭据读取 Drive v3 discovery 文档
 func (t *MakerSuiteHTTPTransport) getDriveDiscovery(ctx context.Context, account *Account, client *http.Client, gapi http.Header, apiKey string) error {
-	address := fmt.Sprintf(driveDiscoveryURL, url.QueryEscape(apiKey))
+	address := fmt.Sprintf(driveDiscoveryURL, url.QueryEscape(apiKey), newGAPIUnique())
 	state, err := pageLoginState(ctx, account)
 	if err != nil {
 		return fmt.Errorf("读取账户登录状态: %w", err)
@@ -1459,8 +1501,8 @@ type DriveFileReader interface {
 	ReadDriveFile(ctx context.Context, accountID, token, fileID string)
 }
 
-// driveFileURL 是页面 gapi 读取对话附件的 ID、类型、名称与缩略图地址的 Drive v3 files.get 地址，参数依次为文件 ID 与 API key
-const driveFileURL = "https://content.googleapis.com/drive/v3/files/%s?supportsAllDrives=true&fields=id%%2C%%20mimeType%%2C%%20name%%2C%%20thumbnailLink&key=%s&%%24unique=gc719"
+// driveFileURL 是页面 gapi 读取对话附件的 ID、类型、名称与缩略图地址的 Drive v3 files.get 地址，参数依次为文件 ID、API key 与随机 $unique
+const driveFileURL = "https://content.googleapis.com/drive/v3/files/%s?supportsAllDrives=true&fields=id%%2C%%20mimeType%%2C%%20name%%2C%%20thumbnailLink&key=%s&%%24unique=%s"
 
 // ReadDriveFile 像官网对话中新一轮显示附件一样经 gapi 读取 Drive v3 discovery 文档与文件的 ID、类型、名称和缩略图地址，再载入去掉尺寸后缀的缩略图；失败只记日志
 func (t *MakerSuiteHTTPTransport) ReadDriveFile(ctx context.Context, accountID, token, fileID string) {
@@ -1483,10 +1525,10 @@ func (t *MakerSuiteHTTPTransport) getDriveFile(ctx context.Context, accountID, t
 	if err != nil {
 		return err
 	}
-	if err := t.getDriveDiscovery(ctx, account, client, headers, apiKey); err != nil {
+	if err := t.loadDriveDiscovery(ctx, account, client, headers, apiKey); err != nil {
 		return err
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf(driveFileURL, url.PathEscape(fileID), url.QueryEscape(apiKey)), nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf(driveFileURL, url.PathEscape(fileID), url.QueryEscape(apiKey), newGAPIUnique()), nil)
 	if err != nil {
 		return err
 	}
@@ -1543,9 +1585,10 @@ func uploadDriveMultipart(ctx context.Context, client *http.Client, address stri
 	if err != nil {
 		return FileRef{}, err
 	}
-	prefix := "\r\n\r\n--" + gapiBoundary + "\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n\r\n" + metadata +
-		"\r\n\r\n\r\n--" + gapiBoundary + "\r\nContent-Type: " + request.MIME + "\r\nContent-Transfer-Encoding: base64\r\n\r\n\r\n"
-	suffix := "\r\n--" + gapiBoundary + "--"
+	boundary := newGAPIBoundary()
+	prefix := "\r\n\r\n--" + boundary + "\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n\r\n" + metadata +
+		"\r\n\r\n\r\n--" + boundary + "\r\nContent-Type: " + request.MIME + "\r\nContent-Transfer-Encoding: base64\r\n\r\n\r\n"
+	suffix := "\r\n--" + boundary + "--"
 	encoded, writer := io.Pipe()
 	go func() {
 		encoder := base64.NewEncoder(base64.StdEncoding, writer)
@@ -1566,7 +1609,7 @@ func uploadDriveMultipart(ctx context.Context, client *http.Client, address stri
 	}
 	httpRequest.ContentLength = int64(len(prefix)) + int64(base64.StdEncoding.EncodedLen(int(request.Size))) + int64(len(suffix))
 	httpRequest.Header = headers.Clone()
-	httpRequest.Header.Set("Content-Type", `multipart/related; boundary="`+gapiBoundary+`"`)
+	httpRequest.Header.Set("Content-Type", `multipart/related; boundary="`+boundary+`"`)
 	httpRequest.Header.Set("Sec-Fetch-Storage-Access", "none")
 	httpRequest.Header.Set("Sec-Fetch-Site", "cross-site")
 	response, err := sendHTTP(client, httpRequest)
@@ -1576,7 +1619,7 @@ func uploadDriveMultipart(ctx context.Context, client *http.Client, address stri
 	return parseDriveUploadResponse(response, request)
 }
 
-func uploadDriveResumable(ctx context.Context, client *http.Client, token string, request UploadRequest) (FileRef, error) {
+func uploadDriveResumable(ctx context.Context, client *http.Client, token string, headers http.Header, request UploadRequest) (FileRef, error) {
 	metadata, err := json.Marshal(map[string]string{"mimeType": request.MIME, "name": request.Name})
 	if err != nil {
 		return FileRef{}, err
@@ -1585,6 +1628,7 @@ func uploadDriveResumable(ctx context.Context, client *http.Client, token string
 	if err != nil {
 		return FileRef{}, err
 	}
+	initRequest.Header = headers.Clone()
 	initRequest.Header.Set("Authorization", "Bearer "+token)
 	initRequest.Header.Set("Content-Type", "application/json; charset=UTF-8")
 	initRequest.Header.Set("X-Upload-Content-Type", request.MIME)
@@ -1616,7 +1660,7 @@ func uploadDriveResumable(ctx context.Context, client *http.Client, token string
 		buffered += count
 		switch {
 		case readErr == nil:
-			if err := putDriveUploadChunk(ctx, client, token, sessionURL, request.MIME, buffer[:driveUploadChunkSize], offset, -1); err != nil {
+			if err := putDriveUploadChunk(ctx, client, token, headers, sessionURL, request.MIME, buffer[:driveUploadChunkSize], offset, -1); err != nil {
 				return FileRef{}, err
 			}
 			offset += driveUploadChunkSize
@@ -1624,7 +1668,7 @@ func uploadDriveResumable(ctx context.Context, client *http.Client, token string
 			buffered = 1
 		case errors.Is(readErr, io.EOF), errors.Is(readErr, io.ErrUnexpectedEOF):
 			total := offset + int64(buffered)
-			response, err := sendDriveUploadChunk(ctx, client, token, sessionURL, request.MIME, buffer[:buffered], offset, total)
+			response, err := sendDriveUploadChunk(ctx, client, token, headers, sessionURL, request.MIME, buffer[:buffered], offset, total)
 			if err != nil {
 				return FileRef{}, err
 			}
@@ -1639,13 +1683,14 @@ func putDriveUploadChunk(
 	ctx context.Context,
 	client *http.Client,
 	token string,
+	headers http.Header,
 	sessionURL string,
 	mimeType string,
 	data []byte,
 	offset int64,
 	total int64,
 ) error {
-	response, err := sendDriveUploadChunk(ctx, client, token, sessionURL, mimeType, data, offset, total)
+	response, err := sendDriveUploadChunk(ctx, client, token, headers, sessionURL, mimeType, data, offset, total)
 	if err != nil {
 		return err
 	}
@@ -1664,6 +1709,7 @@ func sendDriveUploadChunk(
 	ctx context.Context,
 	client *http.Client,
 	token string,
+	headers http.Header,
 	sessionURL string,
 	mimeType string,
 	data []byte,
@@ -1675,6 +1721,7 @@ func sendDriveUploadChunk(
 		return nil, err
 	}
 	request.ContentLength = int64(len(data))
+	request.Header = headers.Clone()
 	request.Header.Set("Authorization", "Bearer "+token)
 	request.Header.Set("Content-Type", mimeType)
 	end := offset + int64(len(data)) - 1
@@ -1736,6 +1783,7 @@ func (t *MakerSuiteHTTPTransport) DownloadDrive(ctx context.Context, accountID s
 	if err != nil {
 		return MediaStream{}, release(err)
 	}
+	httpRequest.Header = t.driveBrowserHeaders(ctx, lease.Account())
 	httpRequest.Header.Set("Authorization", "Bearer "+token)
 	client, err := t.clientForAccount(lease.Account())
 	if err != nil {
@@ -1776,6 +1824,7 @@ func (t *MakerSuiteHTTPTransport) DeleteDrive(ctx context.Context, accountID str
 	if err != nil {
 		return err
 	}
+	request.Header = t.driveBrowserHeaders(ctx, lease.Account())
 	request.Header.Set("Authorization", "Bearer "+token)
 	client, err := t.clientForAccount(lease.Account())
 	if err != nil {
@@ -1809,6 +1858,7 @@ func (t *MakerSuiteHTTPTransport) DriveFileExists(ctx context.Context, accountID
 	if err != nil {
 		return false, err
 	}
+	request.Header = t.driveBrowserHeaders(ctx, lease.Account())
 	request.Header.Set("Authorization", "Bearer "+token)
 	client, err := t.clientForAccount(lease.Account())
 	if err != nil {

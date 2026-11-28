@@ -340,8 +340,11 @@ func stringEnd(body []byte, from int) (int, bool) {
 	return 0, false
 }
 
-// pageCountTokensDelay 是官网页面在 GenerateContent 发出后统计用户轮次 token 的时延
-const pageCountTokensDelay = 2200 * time.Millisecond
+// pageCountTokensMinDelay 与 pageCountTokensMaxDelay 是官网页面在 GenerateContent 发出后统计用户轮次 token 的随机时延区间
+const (
+	pageCountTokensMinDelay = 1850 * time.Millisecond
+	pageCountTokensMaxDelay = 2550 * time.Millisecond
+)
 
 // pageSubmitCountDelay 是官网页面提交函数结果、发出 GenerateContent 后统计函数调用与函数结果两轮 token 的最短时延，实际另加不超过 150 ms 的随机值
 const pageSubmitCountDelay = 250 * time.Millisecond
@@ -426,7 +429,8 @@ func countTokensBody(generate ProtectedRequest) ([]byte, time.Duration, bool) {
 	}
 	if generate.PagePrompt != "" {
 		body, err := json.Marshal([]any{model, []any{[]any{[]any{[]any{nil, generate.PagePrompt}}, "user"}}})
-		return body, pageCountTokensDelay, err == nil
+		delay := pageCountTokensMinDelay + rand.N(pageCountTokensMaxDelay-pageCountTokensMinDelay+1)
+		return body, delay, err == nil
 	}
 	if _, result := wireFunctionResult(generate.Body); !result {
 		return nil, 0, false

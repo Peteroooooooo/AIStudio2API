@@ -426,7 +426,7 @@ type GenerateRequest struct {
 	Config    GenerationConfig `json:"config,omitempty"`
 	Tools     Tools            `json:"tools,omitempty"`
 	AccountID string           `json:"account_id,omitempty"`
-	// SafetySettings 覆盖对应类别的拦截阈值，未列出的类别保持关闭
+	// SafetySettings 覆盖对应类别的拦截阈值，未列出的类别沿用上游默认设置
 	SafetySettings []SafetySetting `json:"safety_settings,omitempty"`
 	// ServiceTier 是 Gemini API 服务等级 flex、standard 或 priority
 	ServiceTier string `json:"service_tier,omitempty"`

@@ -128,28 +128,15 @@ func (service *trackedService) hedgeDelay(modelID, channel string) (time.Duratio
 	return p95, samples >= firstEventMinSamples
 }
 
-// hedgeSelections 返回备用请求依次尝试的账户选择：引用已上传文件或指定账户的请求只用原账户；其余先用尚未尝试的其他账户，再用原账户
-func (service *trackedService) hedgeSelections(primary aistudio.AccountSelection, accountID string, fixed bool, attempted map[string]struct{}) []aistudio.AccountSelection {
+// hedgeSelections 返回备用请求使用的账户选择：只使用当前原账户的空闲并发槽位，不跨账号并发发送相同请求
+func (service *trackedService) hedgeSelections(primary aistudio.AccountSelection, accountID string, _ bool, _ map[string]struct{}) []aistudio.AccountSelection {
 	same := primary
 	same.AllowedAccountIDs = nil
 	same.AccountID = accountID
-	if fixed {
-		return []aistudio.AccountSelection{same}
-	}
-	other := primary
-	other.AllowedAccountIDs = nil
-	for _, id := range service.pool.EnabledAccounts() {
-		if _, tried := attempted[id]; !tried {
-			other.AllowedAccountIDs = append(other.AllowedAccountIDs, id)
-		}
-	}
-	if stickyID, _ := service.pool.ResolveStickyAccount(primary); stickyID != "" && stickyID == accountID {
-		return []aistudio.AccountSelection{same, other}
-	}
-	return []aistudio.AccountSelection{other, same}
+	return []aistudio.AccountSelection{same}
 }
 
-// tryHedgeLease 按顺序立即取得备用请求的租约：其他账户只用 Worker 已就绪且没有活动请求的，原账户用其余并发槽位；都没有时返回 nil
+// tryHedgeLease 按顺序立即取得原账户空闲并发槽位的备用请求租约；没有空闲槽位时返回 nil
 func (service *trackedService) tryHedgeLease(ctx context.Context, selections []aistudio.AccountSelection) (*aistudio.AccountLease, aistudio.AccountSelection) {
 	for _, selection := range selections {
 		if selection.AccountID == "" && len(selection.AllowedAccountIDs) == 0 {

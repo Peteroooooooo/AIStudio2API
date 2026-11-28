@@ -52,7 +52,7 @@ type ProfileTierResult struct {
 	Error       string
 }
 
-// CheckProfileTiers 复用一次主密钥读取与官网公共头，并发检测所选 Chrome 账号的 AI Studio 权益并逐条回调结果
+// CheckProfileTiers 复用一次主密钥读取，为每个所选 Chrome 账号独立创建出口客户端与官网公共头，并发检测 AI Studio 权益并逐条回调结果
 func CheckProfileTiers(ctx context.Context, options ImportOptions, onResult func(ProfileTierResult)) error {
 	if err := ensurePlatformImport(); err != nil {
 		return err
@@ -70,15 +70,6 @@ func CheckProfileTiers(ctx context.Context, options ImportOptions, onResult func
 		return err
 	}
 	masterKey, err := retrieveV20Key(options.ChromeRoot)
-	if err != nil {
-		return err
-	}
-	client, err := aistudio.NewProxyHTTPClient(proxyURL)
-	if err != nil {
-		return err
-	}
-	defer client.CloseIdleConnections()
-	headers, err := aistudio.DiscoverPublicHeaders(ctx, client)
 	if err != nil {
 		return err
 	}
@@ -105,17 +96,31 @@ func CheckProfileTiers(ctx context.Context, options ImportOptions, onResult func
 					return
 				}
 				item.Error = err.Error()
-			} else if tier, err := fetchBenefitTier(ctx, client, &imported.State, headers, 0); err != nil {
+			} else if client, err := aistudio.NewProxyHTTPClient(proxyURL); err != nil {
 				if ctx.Err() != nil {
 					return
 				}
-				if denial := aistudio.RestrictionDenial(err); denial != nil {
-					item.Restricted = denial.Error()
-				} else {
-					item.Error = err.Error()
-				}
+				item.Error = err.Error()
 			} else {
-				item.BenefitTier = tier.String()
+				defer client.CloseIdleConnections()
+				headers, err := aistudio.DiscoverPublicHeaders(ctx, client)
+				if err != nil {
+					if ctx.Err() != nil {
+						return
+					}
+					item.Error = err.Error()
+				} else if tier, err := fetchBenefitTier(ctx, client, &imported.State, headers, 0); err != nil {
+					if ctx.Err() != nil {
+						return
+					}
+					if denial := aistudio.RestrictionDenial(err); denial != nil {
+						item.Restricted = denial.Error()
+					} else {
+						item.Error = err.Error()
+					}
+				} else {
+					item.BenefitTier = tier.String()
+				}
 			}
 			if onResult != nil && ctx.Err() == nil {
 				emitMu.Lock()

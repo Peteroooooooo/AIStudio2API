@@ -945,7 +945,7 @@ func (a *Account) AcceptLanguage() string {
 	if language == "" || strings.EqualFold(language, locale) {
 		return locale
 	}
-	return locale + "," + strings.ToLower(language) + ";q=0.9"
+	return locale + "," + strings.ToLower(language) + ";q=0.5"
 }
 
 // SupportsModel 判断账户实时目录是否包含模型
@@ -2100,14 +2100,17 @@ func (l *AccountLease) ReplaceCookies(cookies []StateCookie) error {
 	if err != nil {
 		return err
 	}
+	skipWrite := false
 	if onlyRotatingCookiesChanged(state.Cookies, cookies) {
 		if info, err := os.Stat(l.account.StoragePath); err == nil && time.Since(info.ModTime()) < rotatingCookieWriteInterval {
-			return nil
+			skipWrite = true
 		}
 	}
 	state.Cookies = append([]StateCookie(nil), cookies...)
-	if err := WriteStorageState(l.account.StoragePath, state); err != nil {
-		return err
+	if !skipWrite {
+		if err := WriteStorageState(l.account.StoragePath, state); err != nil {
+			return err
+		}
 	}
 	l.pool.mu.Lock()
 	l.account.StorageState = state
@@ -3169,13 +3172,13 @@ func (p *AccountPool) Status() []AccountStatus {
 			Message:     message,
 			Directory:   account.Directory,
 
-			Transition:       progress.operation,
-			TransitionStep:   progress.step,
-			TransitionIndex:  progress.index,
-			TransitionTotal:  progress.total,
-			TransitionSince:  progress.since,
-			CatalogError:     catalogError,
-			ActiveRequests:   account.active,
+			Transition:           progress.operation,
+			TransitionStep:       progress.step,
+			TransitionIndex:      progress.index,
+			TransitionTotal:      progress.total,
+			TransitionSince:      progress.since,
+			CatalogError:         catalogError,
+			ActiveRequests:       account.active,
 			CatalogSyncedAt:      account.catalogSyncedAt,
 			HiddenDiscovered:     account.hiddenDiscovered,
 			HiddenModels:         len(account.hiddenModels),

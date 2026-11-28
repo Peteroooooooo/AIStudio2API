@@ -25,6 +25,9 @@ var firefoxVersionPattern = regexp.MustCompile(`\b1[0-9]{2}\.0\b`)
 
 const camoufoxFirefoxMajor = 158
 
+// quotaTemporaryLimitKey 是账户指纹中保存 Firefox 临时存储配额上限（KB）的内部键，不写入 CAMOU_CONFIG_*
+const quotaTemporaryLimitKey = "quota:temporaryLimitKB"
+
 type savedFingerprint struct {
 	FirefoxVersion int            `json:"firefox_version"`
 	Locale         string         `json:"locale"`
@@ -78,6 +81,7 @@ func buildCamoufoxConfig(ffVersion int, locale string, timezone string) (map[str
 	version := fmt.Sprintf("%d.0", ffVersion)
 	userAgent := replaceFirefoxVersion(fingerprint.Navigator.UserAgent, version)
 	appVersion := replaceFirefoxVersion(fingerprint.Navigator.AppVersion, version)
+	hardware := drawWindowsHardwareProfile()
 	config := make(map[string]any)
 	for key, value := range map[string]any{
 		"navigator.userAgent":           userAgent,
@@ -86,7 +90,7 @@ func buildCamoufoxConfig(ffVersion int, locale string, timezone string) (map[str
 		"navigator.appVersion":          appVersion,
 		"navigator.oscpu":               fingerprint.Navigator.Oscpu,
 		"navigator.platform":            fingerprint.Navigator.Platform,
-		"navigator.hardwareConcurrency": firefoxHardwareConcurrency(),
+		"navigator.hardwareConcurrency": hardware.concurrency,
 		"navigator.product":             fingerprint.Navigator.Product,
 		"screen.colorDepth":             nonNegative(fingerprint.Screen.ColorDepth),
 		"screen.pixelDepth":             nonNegative(fingerprint.Screen.PixelDepth),
@@ -97,20 +101,14 @@ func buildCamoufoxConfig(ffVersion int, locale string, timezone string) (map[str
 			config[key] = value
 		}
 	}
-	applyWindowsDisplay(config)
-	for key, target := range map[string]string{
-		"charging":        "battery:charging",
-		"chargingTime":    "battery:chargingTime",
-		"dischargingTime": "battery:dischargingTime",
-	} {
-		if value, ok := fingerprint.Battery[key]; ok && truthy(value) {
-			config[target] = value
-		}
-	}
+	applyWindowsDisplay(config, hardware.display, hardware.scale, hardware.taskbar)
+	config["AudioContext:sampleRate"] = hardware.audioRate
+	config["AudioContext:maxChannelCount"] = hardware.audioChans
+	config[quotaTemporaryLimitKey] = hardware.storageLimit
 	config["allowMainWorld"] = true
 	config["showcursor"] = false
 	config["fonts"] = windowsFontSubset(locale)
-	maps.Copy(config, windowsWebGLByVendor())
+	maps.Copy(config, hardware.webgl)
 	applyLocaleTimezone(config, locale, timezone)
 	normalizeCamoufoxConfig(config)
 	return config, nil
@@ -209,7 +207,7 @@ func applyLocaleTimezone(config map[string]any, locale string, timezone string) 
 	config["navigator.languages"] = localeValues(locale)
 	config["headers.Accept-Language"] = locale
 	if found {
-		config["headers.Accept-Language"] = locale + "," + strings.ToLower(language) + ";q=0.9"
+		config["headers.Accept-Language"] = locale + "," + strings.ToLower(language) + ";q=0.5"
 	}
 	config["locale:language"] = strings.ToLower(language)
 	if found {
@@ -256,7 +254,12 @@ var sessionVariables = []string{"HOME", "XDG_RUNTIME_DIR", "XAUTHORITY"}
 
 // camoufoxEnvironment 将指纹 JSON 分片写入 Camoufox 环境变量
 func camoufoxEnvironment(config map[string]any) ([]string, error) {
-	encoded, err := json.Marshal(config)
+	payload := config
+	if _, ok := config[quotaTemporaryLimitKey]; ok {
+		payload = maps.Clone(config)
+		delete(payload, quotaTemporaryLimitKey)
+	}
+	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("编码 Camoufox 指纹: %w", err)
 	}
@@ -562,14 +565,21 @@ func truthy(value any) bool {
 	}
 }
 
-// normalizeCamoufoxConfig 按官方启动器修正指纹中的空值、隐私信号、窗口几何、字体、WebGL 与媒体设备，删除 Camoufox 已移除的配置项；指纹为没有触屏、窗口在主屏上的 Windows 桌面，可用区域取 Firefox 158 指纹保护报告的值，字体含 Windows 必有字体
+// normalizeCamoufoxConfig 按官方启动器修正指纹中的空值、隐私信号、窗口几何、字体、WebGL 与媒体设备，删除 Camoufox 已移除的配置项；指纹为没有触屏、窗口在主屏上的 Windows 桌面，可用区域保留有效 Win10/Win11 任务栏高度，字体含 Windows 必有字体
 func normalizeCamoufoxConfig(config map[string]any) {
 	for key, value := range config {
+		if strings.HasPrefix(key, "battery:") {
+			delete(config, key)
+			continue
+		}
 		derived := strings.HasPrefix(key, "navigator.") || strings.HasPrefix(key, "screen.") ||
-			strings.HasPrefix(key, "window.") || strings.HasPrefix(key, "battery:")
+			strings.HasPrefix(key, "window.")
 		if derived && key != "window.screenX" && key != "window.screenY" && !truthy(value) {
 			delete(config, key)
 		}
+	}
+	if acceptLanguage, ok := config["headers.Accept-Language"].(string); ok && strings.HasSuffix(acceptLanguage, ";q=0.9") {
+		config["headers.Accept-Language"] = strings.TrimSuffix(acceptLanguage, ";q=0.9") + ";q=0.5"
 	}
 	for _, key := range []string{"window.history.length", "canvas:aaOffset", "canvas:aaCapOffset", "canvas:seed", "audio:seed", "fonts:spacing_seed", "navigator.doNotTrack", "navigator.globalPrivacyControl"} {
 		delete(config, key)
@@ -603,7 +613,7 @@ func integer(config map[string]any, key string) (int, bool) {
 	return int(value), ok
 }
 
-// reportAvailArea 按 Firefox 158 在 Windows 上的指纹保护写入可用区域：宽为屏幕宽，高为屏幕高减 firefoxTaskbar
+// reportAvailArea 写入 Windows 可用区域：宽为屏幕宽，高在已记录有效 Win10/Win11 任务栏高度时保留，否则回退为屏幕高减 firefoxTaskbar
 func reportAvailArea(config map[string]any) {
 	width, _ := integer(config, "screen.width")
 	height, _ := integer(config, "screen.height")
@@ -611,6 +621,12 @@ func reportAvailArea(config map[string]any) {
 		return
 	}
 	config["screen.availWidth"] = width
+	if availHeight, ok := integer(config, "screen.availHeight"); ok {
+		taskbar := height - availHeight
+		if taskbar == windowsTaskbarWin10 || taskbar == windowsTaskbarWin11 {
+			return
+		}
+	}
 	config["screen.availHeight"] = height - firefoxTaskbar
 }
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"math/rand/v2"
 	"net/http"
 	"net/url"
 	"slices"
@@ -937,16 +938,47 @@ func (service *trackedService) staleCatalogAccountIDs(accountIDs []string) []str
 	return slices.DeleteFunc(accountIDs, func(accountID string) bool { return fresh[accountID] })
 }
 
-// refreshAccountModelCatalogs 同步账户目录并按完成顺序发出结果：还没有目录的账户并发载入页面，已有目录的账户逐个载入
+const (
+	// catalogRefreshConcurrency 是启动或重试阶段无缓存账户同步目录的最大并发数
+	catalogRefreshConcurrency = 3
+	// catalogRefreshStaggerBase 与 catalogRefreshStaggerJitter 是连续账户同步目录之间的基础错峰与随机抖动时长
+	catalogRefreshStaggerBase   = 500 * time.Millisecond
+	catalogRefreshStaggerJitter = 1500 * time.Millisecond
+)
+
+// waitCatalogStagger 按 base + [0, jitter) 等待错峰间隔，ctx 结束时返回 false
+func waitCatalogStagger(ctx context.Context, base, jitter time.Duration) bool {
+	delay := base
+	if jitter > 0 {
+		delay += rand.N(jitter)
+	}
+	if delay <= 0 {
+		return ctx.Err() == nil
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+// refreshAccountModelCatalogs 同步账户目录并按完成顺序发出结果：还没有目录的账户有界并发且错峰载入，已有目录的账户逐个错峰载入
 func (service *trackedService) refreshAccountModelCatalogs(
 	ctx context.Context,
 	accountIDs []string,
 	pendingOnly bool,
 ) <-chan accountModelRefreshResult {
 	results := make(chan accountModelRefreshResult, len(accountIDs))
-	refresh := func(accountID string) {
+	refresh := func(accountID string, stagger bool) {
 		if pendingOnly && !service.modelRetryPending(accountID) {
 			results <- accountModelRefreshResult{accountID: accountID, skipped: true}
+			return
+		}
+		if stagger && !waitCatalogStagger(ctx, catalogRefreshStaggerBase, catalogRefreshStaggerJitter) {
+			results <- accountModelRefreshResult{accountID: accountID, err: ctx.Err()}
 			return
 		}
 		models, err := service.refreshAccountModelCatalog(ctx, accountID, pendingOnly)
@@ -956,20 +988,41 @@ func (service *trackedService) refreshAccountModelCatalogs(
 	for _, status := range service.pool.Status() {
 		catalogued[status.ID] = len(status.Models) > 0
 	}
-	var refreshes sync.WaitGroup
-	var known []string
+	var uncatalogued, known []string
 	for _, accountID := range accountIDs {
 		if catalogued[accountID] {
 			known = append(known, accountID)
-			continue
+		} else {
+			uncatalogued = append(uncatalogued, accountID)
 		}
-		refreshes.Go(func() { refresh(accountID) })
 	}
-	refreshes.Go(func() {
-		for _, accountID := range known {
-			refresh(accountID)
+	var refreshes sync.WaitGroup
+	if len(uncatalogued) > 0 {
+		type queuedAccount struct {
+			id      string
+			stagger bool
 		}
-	})
+		queue := make(chan queuedAccount, len(uncatalogued))
+		for index, accountID := range uncatalogued {
+			queue <- queuedAccount{id: accountID, stagger: index > 0}
+		}
+		close(queue)
+		workers := min(catalogRefreshConcurrency, len(uncatalogued))
+		for range workers {
+			refreshes.Go(func() {
+				for item := range queue {
+					refresh(item.id, item.stagger)
+				}
+			})
+		}
+	}
+	if len(known) > 0 {
+		refreshes.Go(func() {
+			for index, accountID := range known {
+				refresh(accountID, index > 0 || len(uncatalogued) > 0)
+			}
+		})
+	}
 	go func() {
 		refreshes.Wait()
 		close(results)
@@ -1062,7 +1115,12 @@ func (service *trackedService) verifyAccount(ctx context.Context, accountID stri
 	return err
 }
 
-// retryModelCatalogs 每 30 秒重新载入待同步账户的页面重试目录，自 startedAt 起每 24 小时重新载入启用账户的页面读取权益与目录；到期资源在启动时与每 10 分钟删除
+// nextReclaimInterval 返回 idleResourceReclaimInterval 叠加 ±25% 随机抖动的下次清理间隔
+func nextReclaimInterval() time.Duration {
+	return time.Duration(float64(idleResourceReclaimInterval) * (0.75 + 0.5*rand.Float64()))
+}
+
+// retryModelCatalogs 每 30 秒重新载入待同步账户的页面重试目录，自 startedAt 起每 24 小时重新载入启用账户的页面读取权益与目录；到期资源在启动时与每约 10 分钟（±25% 随机抖动）删除
 func (service *trackedService) retryModelCatalogs(ctx context.Context, startedAt time.Time) {
 	var patrol sync.WaitGroup
 	defer patrol.Wait()
@@ -1070,14 +1128,15 @@ func (service *trackedService) retryModelCatalogs(ctx context.Context, startedAt
 	service.reclaimExpiredResources(ctx)
 	ticker := time.NewTicker(modelCatalogRetryInterval)
 	defer ticker.Stop()
-	reclaimTicker := time.NewTicker(idleResourceReclaimInterval)
-	defer reclaimTicker.Stop()
+	reclaimTimer := time.NewTimer(nextReclaimInterval())
+	defer reclaimTimer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-reclaimTicker.C:
+		case <-reclaimTimer.C:
 			service.reclaimExpiredResources(ctx)
+			reclaimTimer.Reset(nextReclaimInterval())
 		case <-ticker.C:
 			if !service.retryAccountModelCatalogs(ctx) {
 				return
@@ -2171,10 +2230,10 @@ type generateAttempt struct {
 	source           <-chan aistudio.Event
 	first            aistudio.Event
 	firstAt          time.Time
-	err            error
-	cancel         context.CancelFunc
-	stopFirstEvent func()
-	done           chan struct{}
+	err              error
+	cancel           context.CancelFunc
+	stopFirstEvent   func()
+	done             chan struct{}
 	// serving 是正在生成回答的账户租约，续写轮换账户后为新账户的租约
 	serving atomic.Pointer[aistudio.AccountLease]
 	// failures 是请求已用掉的换号次数，续写轮换号在此基础上计数

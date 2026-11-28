@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/text/language"
@@ -35,11 +36,37 @@ var lookupURLs = []string{
 // lookupTimeout 是一次出口查询等待全部查询服务的总时限
 const lookupTimeout = 5 * time.Second
 
-// fallbackLocale 与 fallbackTimezone 是读不到本机语言与时区时使用的值
+// lookupCacheTTL 是出口地理结果在内存中复用的有效期，避免同代理重复请求 GeoIP 服务
+const lookupCacheTTL = 6 * time.Hour
+
+// fallbackLocale 与 fallbackTimezone 是出口查询失败时使用的中性默认值，避免泄漏宿主机本地环境
 const (
 	fallbackLocale   = "en-US"
 	fallbackTimezone = "UTC"
 )
+
+type exitCacheEntry struct {
+	mu        sync.Mutex
+	exit      Exit
+	expiresAt time.Time
+}
+
+var (
+	exitCacheMu sync.Mutex
+	exitCache   = make(map[string]*exitCacheEntry)
+)
+
+func cacheEntryFor(proxy string) *exitCacheEntry {
+	key := strings.TrimSpace(proxy)
+	exitCacheMu.Lock()
+	defer exitCacheMu.Unlock()
+	entry := exitCache[key]
+	if entry == nil {
+		entry = &exitCacheEntry{}
+		exitCache[key] = entry
+	}
+	return entry
+}
 
 // answer 是查询服务的响应：ipinfo.io 的国家代码在 country，其余在 country_code；ipwho.is 的时区是带 id 的对象，其余是字符串
 type answer struct {
@@ -51,6 +78,34 @@ type answer struct {
 
 // Lookup 经 proxy 同时请求各查询服务，返回第一个给出有效 IP、国家代码与时区的结果，语言取该国 CLDR 最可能的语言；proxy 为空时直连，总时限 lookupTimeout
 func Lookup(ctx context.Context, proxy string) (Exit, error) {
+	exit, err := queryExit(ctx, proxy)
+	if err == nil {
+		entry := cacheEntryFor(proxy)
+		entry.mu.Lock()
+		entry.exit = exit
+		entry.expiresAt = time.Now().Add(lookupCacheTTL)
+		entry.mu.Unlock()
+	}
+	return exit, err
+}
+
+func cachedLookup(ctx context.Context, proxy string) (Exit, error) {
+	entry := cacheEntryFor(proxy)
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+	if time.Now().Before(entry.expiresAt) {
+		return entry.exit, nil
+	}
+	exit, err := queryExit(ctx, proxy)
+	if err != nil {
+		return Exit{}, err
+	}
+	entry.exit = exit
+	entry.expiresAt = time.Now().Add(lookupCacheTTL)
+	return exit, nil
+}
+
+func queryExit(ctx context.Context, proxy string) (Exit, error) {
 	client, err := newClient(proxy)
 	if err != nil {
 		return Exit{}, err
@@ -80,14 +135,14 @@ func Lookup(ctx context.Context, proxy string) (Exit, error) {
 	return Exit{}, errors.Join(errs...)
 }
 
-// Environment 返回账户的语言与时区：两项都给出时原样返回，否则经 proxy 查询出口，未给出的项取出口所在地的语言与时区；查询失败时未给出的项取本机的语言与时区，同时返回查询失败的原因
+// Environment 返回账户的语言与时区：两项都给出时原样返回，否则经 proxy 查询出口（同代理复用缓存），未给出的项取出口所在地的语言与时区；查询失败时使用中性默认值 en-US / UTC，同时返回查询失败的原因
 func Environment(ctx context.Context, proxy string, locale string, timezone string) (Exit, error) {
 	if locale != "" && timezone != "" {
 		return Exit{Locale: locale, Timezone: timezone}, nil
 	}
-	exit, err := Lookup(ctx, proxy)
+	exit, err := cachedLookup(ctx, proxy)
 	if err != nil {
-		exit = Exit{Locale: localLocale(), Timezone: localTimezone()}
+		exit = Exit{Locale: fallbackLocale, Timezone: fallbackTimezone}
 	}
 	if locale != "" {
 		exit.Locale = locale

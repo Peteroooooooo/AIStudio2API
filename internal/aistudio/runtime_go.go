@@ -13,6 +13,7 @@ import (
 	"maps"
 	"math/rand/v2"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -422,7 +423,9 @@ func (runtime *goWAARuntime) open(ctx context.Context, fingerprint map[string]an
 	}
 	documentTiming(runtime.profile.Navigation, time.Since(runtime.profile.NavigationStart))
 	go runtime.loadPageScripts(context.WithoutCancel(ctx))
-	runtime.vitals = newPageVitals(runtime.sendClearcut, runtime.telemetry, runtime.uiLocale, runtime.location(), runtime.profile.NavigationStart, runtime.profile.Navigation, page.Path)
+	_, cookieBarDecided := runtime.profile.LocalStorage[cookieBarStorageKey]
+	cookieBarDismissed := cookieBarDecided || runtime.pageCache.notes(cookieBarConfigURL(runtime.cookieBarLanguage)).ConsentOptional
+	runtime.vitals = newPageVitals(runtime.sendClearcut, runtime.telemetry, runtime.uiLocale, runtime.location(), runtime.profile.NavigationStart, runtime.profile.Navigation, page.Path, cookieBarDismissed)
 	if runtime.windowID == "" {
 		runtime.windowID = pageWindowID()
 	}
@@ -786,9 +789,28 @@ func (runtime *goWAARuntime) loadPage(ctx context.Context) (string, pageDocument
 	navigationStart := time.Now()
 	for redirect := 0; redirect < 5; redirect++ {
 		timing := &connectionTiming{}
-		response, err := runtime.do(context.WithValue(ctx, connectionTimingKey{}, timing), http.MethodGet, target, nil, headers)
+		var firstByteAt time.Time
+		trace := &httptrace.ClientTrace{
+			GotFirstResponseByte: func() {
+				if firstByteAt.IsZero() {
+					firstByteAt = time.Now()
+				}
+			},
+		}
+		requestCtx := httptrace.WithClientTrace(context.WithValue(ctx, connectionTimingKey{}, timing), trace)
+		response, err := runtime.do(requestCtx, http.MethodGet, target, nil, headers)
 		if err != nil {
 			return "", pageDocument{}, fmt.Errorf("载入 AI Studio 页面: %w", err)
+		}
+		headersAt := time.Now()
+		if !firstByteAt.IsZero() && firstByteAt.Before(headersAt) {
+			headersAt = firstByteAt
+		}
+		encoded := 0
+		if response.ContentLength > 0 {
+			encoded = int(response.ContentLength)
+		} else if cl, err := strconv.Atoi(strings.TrimSpace(response.Header.Get("Content-Length"))); err == nil && cl > 0 {
+			encoded = cl
 		}
 		body, readErr := io.ReadAll(response.Body)
 		_ = response.Body.Close()
@@ -823,7 +845,7 @@ func (runtime *goWAARuntime) loadPage(ctx context.Context) (string, pageDocument
 		runtime.pageFlags = parsePageFlags(body)
 		runtime.profile.NavigationStart = navigationStart
 		runtime.profile.Navigation, runtime.profile.DOMLoading = navigationTiming(pageLoad{
-			url: target, protocol: nextHopProtocol(response.Proto), started: navigationStart, connection: timing, end: runtime.pageLoaded.Sub(navigationStart), decoded: len(body),
+			url: target, protocol: nextHopProtocol(response.Proto), started: navigationStart, connection: timing, headersAt: headersAt, end: runtime.pageLoaded.Sub(navigationStart), encoded: encoded, decoded: len(body),
 		})
 		runtime.profile.TrustedTypes = requiresTrustedScripts(response.Header.Values("Content-Security-Policy"))
 		document := parsePageDocument(body, target)
@@ -1457,7 +1479,7 @@ func (runtime *goWAARuntime) proof(ctx context.Context, digest string, prompt st
 		if startsNewChat(runtime.chat, contents) {
 			newChat = runtime.newChat
 		}
-		proof, err = vm.RunProofAfter(ctx, digest, prompt, newChat, settings, pickedPause)
+		proof, err = vm.RunProofAfter(ctx, digest, prompt, newChat, settings, jitterPause(pickedPause))
 	case input == proofSubmit:
 		proof, err = vm.SubmitProof(ctx, digest, prompt, submitted)
 	case rerun:
