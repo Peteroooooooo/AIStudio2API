@@ -2,6 +2,7 @@ package aistudio
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -206,6 +207,253 @@ func TestSmartTrackerCustomSessionTTL(t *testing.T) {
 	// 超过 2 小时后失效
 	if got := tracker.stickyAccount("sess-1", base.Add(2*time.Hour)); got != "" {
 		t.Fatalf("sticky at +2h = %q, want empty", got)
+	}
+}
+
+func TestComputeSessionKeyStripsBillingHeaderAndAvoidsTruncationCollision(t *testing.T) {
+	// Claude Code 每轮变化 x-anthropic-billing-header 中的 cch=，清洗后应产出完全一致的 SessionKey
+	turn1Sys := []string{
+		"x-anthropic-billing-header: cc_version=2.1.0; cc_entrypoint=cli; cch=aaa11;",
+		"You are an expert assistant.",
+	}
+	turn2Sys := []string{
+		"x-anthropic-billing-header: cc_version=2.1.0; cc_entrypoint=cli; cch=bbb22;",
+		"You are an expert assistant.",
+	}
+	user := []Content{{Role: RoleUser, Parts: []Part{{Text: "Fix bug in router"}}}}
+	k1 := ComputeSessionKey("k1", "gemini-2.5-pro", turn1Sys, user)
+	k2 := ComputeSessionKey("k1", "gemini-2.5-pro", turn2Sys, user)
+	if k1 != k2 {
+		t.Fatalf("billing header cch drift changed session key: %q != %q", k1, k2)
+	}
+
+	// 并发子代理首条消息共享 >512 字节的 <system-reminder> 前缀，仅尾部任务描述不同，不得碰撞
+	sharedPrefix := "<system-reminder>" + strings.Repeat("repo-context-", 60) + "</system-reminder>\n"
+	subA := []Content{{Role: RoleUser, Parts: []Part{{Text: sharedPrefix + "Task A: inspect smart.go"}}}}
+	subB := []Content{{Role: RoleUser, Parts: []Part{{Text: sharedPrefix + "Task B: inspect runtime.go"}}}}
+	ka := ComputeSessionKey("k1", "gemini-2.5-pro", turn1Sys, subA)
+	kb := ComputeSessionKey("k1", "gemini-2.5-pro", turn1Sys, subB)
+	if ka == kb {
+		t.Fatalf("sub-agents sharing >512B prefix collided on session key %q", ka)
+	}
+
+	// 显式 sessionHint（如 prompt_cache_key / X-Session-Id）应独立区分会话
+	h1 := ComputeSessionKeyForRequest("k1", "gemini-2.5-pro", "subagent-1", turn1Sys, user)
+	h2 := ComputeSessionKeyForRequest("k1", "gemini-2.5-pro", "subagent-2", turn1Sys, user)
+	if h1 == h2 || h1 == k1 {
+		t.Fatalf("explicit session hints should separate sessions: h1=%q h2=%q k1=%q", h1, h2, k1)
+	}
+}
+
+func TestSmartRoutingSpreadNewSubAgentsAndStickyContinuations(t *testing.T) {
+	model := Model{ID: "gemini-2.5-pro", Methods: []string{"generateContent"}, Capabilities: map[string]bool{"chat_model": true}}
+	accounts := []*Account{
+		{ID: "a@example.com", BenefitTier: BenefitTierPro, Config: AccountConfig{Enabled: true}, State: AccountReady, Models: []Model{model}, modelAccessGeneration: 1},
+		{ID: "b@example.com", BenefitTier: BenefitTierPro, Config: AccountConfig{Enabled: true}, State: AccountReady, Models: []Model{model}, modelAccessGeneration: 1},
+		{ID: "c@example.com", BenefitTier: BenefitTierPro, Config: AccountConfig{Enabled: true}, State: AccountReady, Models: []Model{model}, modelAccessGeneration: 1},
+	}
+	pool := smartTestPool(accounts, 3)
+
+	// 1. 并发拉起 3 个新 Sub-agent，应分摊到 3 个不同账号
+	picked := make(map[string]bool)
+	leases := make([]*AccountLease, 0, 3)
+	keys := []string{"sub-1", "sub-2", "sub-3"}
+	for _, key := range keys {
+		l, _, err := pool.TryAcquireFor(context.Background(), AccountSelection{
+			ModelID: "gemini-2.5-pro", Method: "generateContent", SessionKey: key,
+		})
+		if err != nil || l == nil {
+			t.Fatalf("new subagent %s: lease=%v err=%v", key, l, err)
+		}
+		if l.RouteReason() != "new_spread" {
+			t.Fatalf("new subagent %s route = %q, want new_spread", key, l.RouteReason())
+		}
+		if picked[l.Account().ID] {
+			t.Fatalf("new subagents piled onto %s instead of spreading", l.Account().ID)
+		}
+		picked[l.Account().ID] = true
+		leases = append(leases, l)
+	}
+	sub1Account := leases[0].Account().ID
+	for _, l := range leases {
+		_ = l.Release()
+	}
+
+	// 2. 即使 sub1 所在账号此刻正被另一并发请求占用 (active=1 < 3) 且其余两号空闲 (active=0)，sub1 续接轮仍留在原号吃缓存
+	blocker, _, err := pool.TryAcquireFor(context.Background(), AccountSelection{
+		ModelID: "gemini-2.5-pro", Method: "generateContent", AccountID: sub1Account,
+	})
+	if err != nil || blocker == nil {
+		t.Fatalf("blocker: lease=%v err=%v", blocker, err)
+	}
+	defer blocker.Release()
+
+	contSession, _, err := pool.TryAcquireFor(context.Background(), AccountSelection{
+		ModelID: "gemini-2.5-pro", Method: "generateContent", SessionKey: "sub-1",
+	})
+	if err != nil || contSession == nil {
+		t.Fatalf("contSession: lease=%v err=%v", contSession, err)
+	}
+	if contSession.Account().ID != sub1Account || contSession.RouteReason() != "session_sticky" {
+		t.Fatalf("sticky continuation got account=%s route=%q, want %s/session_sticky", contSession.Account().ID, contSession.RouteReason(), sub1Account)
+	}
+	_ = contSession.Release()
+
+	// TurnAccountID 同样优先命中原号且标记为 turn_sticky
+	contTurn, _, err := pool.TryAcquireFor(context.Background(), AccountSelection{
+		ModelID: "gemini-2.5-pro", Method: "generateContent", SessionKey: "other-key", TurnAccountID: sub1Account,
+	})
+	if err != nil || contTurn == nil {
+		t.Fatalf("contTurn: lease=%v err=%v", contTurn, err)
+	}
+	if contTurn.Account().ID != sub1Account || contTurn.RouteReason() != "turn_sticky" {
+		t.Fatalf("turn sticky got account=%s route=%q, want %s/turn_sticky", contTurn.Account().ID, contTurn.RouteReason(), sub1Account)
+	}
+	_ = contTurn.Release()
+
+	// 3. 超过 SoftRPM 但未到 HardRPM 时：新会话分摊走开，粘性续接轮继续留原号
+	pool.SetSmartConfig(SmartConfig{SoftRPM: 2, HardRPM: 10, QuotaAutoFreeze: true})
+	newSess, _, err := pool.TryAcquireFor(context.Background(), AccountSelection{
+		ModelID: "gemini-2.5-pro", Method: "generateContent", SessionKey: "brand-new",
+	})
+	if err != nil || newSess == nil {
+		t.Fatalf("newSess: lease=%v err=%v", newSess, err)
+	}
+	if newSess.Account().ID == sub1Account {
+		t.Fatalf("new session should spread away from busy/soft-RPM account %s", sub1Account)
+	}
+	_ = newSess.Release()
+
+	contOverSoft, _, err := pool.TryAcquireFor(context.Background(), AccountSelection{
+		ModelID: "gemini-2.5-pro", Method: "generateContent", SessionKey: "sub-1",
+	})
+	if err != nil || contOverSoft == nil {
+		t.Fatalf("contOverSoft: lease=%v err=%v", contOverSoft, err)
+	}
+	if contOverSoft.Account().ID != sub1Account {
+		t.Fatalf("sticky continuation over SoftRPM (<HardRPM) = %s, want %s", contOverSoft.Account().ID, sub1Account)
+	}
+	_ = contOverSoft.Release()
+}
+
+func TestSmartRoutingOverflowPreservesHealthyStickyAndFailoverMigrates(t *testing.T) {
+	model := Model{ID: "gemini-2.5-pro", Methods: []string{"generateContent"}, Capabilities: map[string]bool{"chat_model": true}}
+	accounts := []*Account{
+		{ID: "a@example.com", BenefitTier: BenefitTierPro, Config: AccountConfig{Enabled: true}, State: AccountReady, Models: []Model{model}, modelAccessGeneration: 1},
+		{ID: "b@example.com", BenefitTier: BenefitTierPro, Config: AccountConfig{Enabled: true}, State: AccountReady, Models: []Model{model}, modelAccessGeneration: 1},
+	}
+	pool := smartTestPool(accounts, 1)
+	sel := AccountSelection{ModelID: "gemini-2.5-pro", Method: "generateContent", SessionKey: "sess-sticky"}
+
+	// 首轮绑定到 a
+	l1, _, err := pool.TryAcquireFor(context.Background(), sel)
+	if err != nil || l1 == nil {
+		t.Fatalf("l1=%v err=%v", l1, err)
+	}
+	home := l1.Account().ID
+	_ = l1.Release()
+
+	// 1. 临时满并发溢出：home 被占满 -> 溢出到另一号，但绝不覆写 sess-sticky 的原归属
+	busy, _, err := pool.TryAcquireFor(context.Background(), AccountSelection{
+		ModelID: "gemini-2.5-pro", Method: "generateContent", AccountID: home,
+	})
+	if err != nil || busy == nil {
+		t.Fatalf("busy=%v err=%v", busy, err)
+	}
+	overflow, _, err := pool.TryAcquireFor(context.Background(), sel)
+	if err != nil || overflow == nil {
+		t.Fatalf("overflow=%v err=%v", overflow, err)
+	}
+	if overflow.Account().ID == home || overflow.RouteReason() != "overflow_busy" || overflow.StickyTarget() != home {
+		t.Fatalf("overflow got account=%s route=%q target=%q, want other/overflow_busy/%s", overflow.Account().ID, overflow.RouteReason(), overflow.StickyTarget(), home)
+	}
+	_ = overflow.Release()
+	_ = busy.Release()
+
+	// home 空闲后，下一轮立刻回到 home 吃原缓存
+	returned, _, err := pool.TryAcquireFor(context.Background(), sel)
+	if err != nil || returned == nil {
+		t.Fatalf("returned=%v err=%v", returned, err)
+	}
+	if returned.Account().ID != home || returned.RouteReason() != "session_sticky" {
+		t.Fatalf("after overflow got account=%s route=%q, want %s/session_sticky", returned.Account().ID, returned.RouteReason(), home)
+	}
+	_ = returned.Release()
+
+	// 2. 触发 HardRPM 溢出：同样保留原归属，记为 overflow_rpm
+	pool.SetSmartConfig(SmartConfig{SoftRPM: 1, HardRPM: 2, QuotaAutoFreeze: true})
+	rpmOverflow, _, err := pool.TryAcquireFor(context.Background(), sel)
+	if err != nil || rpmOverflow == nil {
+		t.Fatalf("rpmOverflow=%v err=%v", rpmOverflow, err)
+	}
+	if rpmOverflow.Account().ID == home || rpmOverflow.RouteReason() != "overflow_rpm" || rpmOverflow.StickyTarget() != home {
+		t.Fatalf("rpmOverflow got account=%s route=%q target=%q, want other/overflow_rpm/%s", rpmOverflow.Account().ID, rpmOverflow.RouteReason(), rpmOverflow.StickyTarget(), home)
+	}
+	_ = rpmOverflow.Release()
+	if resolved, _ := pool.ResolveStickyAccount(sel); resolved != home {
+		t.Fatalf("sticky after rpm overflow = %q, want %q", resolved, home)
+	}
+
+	// 3. home 发生 403 拒绝：执行故障迁移 failover，且把粘性迁移到新号
+	pool.SetSmartConfig(SmartConfig{SoftRPM: 8, HardRPM: 9, QuotaAutoFreeze: true})
+	pool.RecordSmartRejection(home)
+	failover, _, err := pool.TryAcquireFor(context.Background(), sel)
+	if err != nil || failover == nil {
+		t.Fatalf("failover=%v err=%v", failover, err)
+	}
+	newHome := failover.Account().ID
+	if newHome == home || failover.RouteReason() != "failover" || failover.StickyTarget() != home {
+		t.Fatalf("failover got account=%s route=%q target=%q, want other/failover/%s", newHome, failover.RouteReason(), failover.StickyTarget(), home)
+	}
+	_ = failover.Release()
+	if resolved, _ := pool.ResolveStickyAccount(sel); resolved != newHome {
+		t.Fatalf("sticky after failover = %q, want %q", resolved, newHome)
+	}
+}
+
+func TestModelTurnHistoryAccountLookupAndTokenIsolation(t *testing.T) {
+	turns := newModelTurnHistory()
+	turn1User := []Content{{Role: RoleUser, Parts: []Part{{Text: "Start task"}}}}
+	if got := turns.lastAccount("k1", turn1User); got != "" {
+		t.Fatalf("turn 1 lastAccount = %q, want empty", got)
+	}
+	_, _, tip1 := turns.restore("k1", "a@example.com", turn1User)
+	turns.store("k1", tip1, modelTurn{
+		parts:     []Part{{Text: "Plan ready."}},
+		turnToken: "tok-a",
+		accountID: "a@example.com",
+	})
+
+	turn2 := []Content{
+		{Role: RoleUser, Parts: []Part{{Text: "Start task"}}},
+		{Role: RoleAssistant, Parts: []Part{{Text: "Plan ready."}}},
+		{Role: RoleUser, Parts: []Part{{Text: "Proceed"}}},
+	}
+	if got := turns.lastAccount("k1", turn2); got != "a@example.com" {
+		t.Fatalf("turn 2 lastAccount = %q, want a@example.com", got)
+	}
+	// 同账户恢复应带回 turnToken，跨账户（溢出/故障迁移）恢复必须清空 turnToken
+	_, tokSame, tip2 := turns.restore("k1", "a@example.com", turn2)
+	if tokSame != "tok-a" {
+		t.Fatalf("same-account restore token = %q, want tok-a", tokSame)
+	}
+	_, tokOther, _ := turns.restore("k1", "b@example.com", turn2)
+	if tokOther != "" {
+		t.Fatalf("cross-account restore token = %q, want empty", tokOther)
+	}
+
+	// 分叉会话：分支 A 由 a 生成，分支 B 由 b 生成，最长前缀链分别命中对应账户
+	turns.store("k1", tip2, modelTurn{
+		parts:     []Part{{Text: "Done on B."}},
+		turnToken: "tok-b",
+		accountID: "b@example.com",
+	})
+	turn3B := append(append([]Content(nil), turn2...),
+		Content{Role: RoleAssistant, Parts: []Part{{Text: "Done on B."}}},
+		Content{Role: RoleUser, Parts: []Part{{Text: "Verify"}}},
+	)
+	if got := turns.lastAccount("k1", turn3B); got != "b@example.com" {
+		t.Fatalf("branch B lastAccount = %q, want b@example.com", got)
 	}
 }
 

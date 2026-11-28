@@ -143,6 +143,9 @@ func (service *trackedService) hedgeSelections(primary aistudio.AccountSelection
 			other.AllowedAccountIDs = append(other.AllowedAccountIDs, id)
 		}
 	}
+	if stickyID, _ := service.pool.ResolveStickyAccount(primary); stickyID != "" && stickyID == accountID {
+		return []aistudio.AccountSelection{same, other}
+	}
 	return []aistudio.AccountSelection{other, same}
 }
 

@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/Mag1cFall/AIStudio2API/internal/aistudio"
 )
 
 func TestAuthMiddlewarePriorityAndMatching(t *testing.T) {
@@ -62,5 +64,19 @@ func TestAuthMiddlewarePriorityAndMatching(t *testing.T) {
 				t.Errorf("status = %d, want %d", rec.Code, tt.wantStatus)
 			}
 		})
+	}
+}
+
+func TestAccountContextMiddlewareSessionHint(t *testing.T) {
+	var gotHint string
+	handler := accountContextMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHint = aistudio.SessionHintFromContext(r.Context())
+		w.WriteHeader(http.StatusOK)
+	}))
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	req.Header.Set("X-Session-Id", " subagent-42 ")
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+	if gotHint != "subagent-42" {
+		t.Fatalf("SessionHintFromContext = %q, want subagent-42", gotHint)
 	}
 }

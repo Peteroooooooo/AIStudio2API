@@ -43,6 +43,7 @@ type responsesRequest struct {
 	Prompt             json.RawMessage   `json:"prompt"`
 	Include            []string          `json:"include"`
 	ServiceTier        string            `json:"service_tier"`
+	PromptCacheKey     string            `json:"prompt_cache_key"`
 	// MaxToolCalls 是本响应内置工具调用总次数的上限
 	MaxToolCalls      *int64 `json:"max_tool_calls"`
 	ContextManagement []struct {
@@ -1150,6 +1151,7 @@ func (request responsesRequest) toGenerateRequest(id string) (aistudio.GenerateR
 		Tools:       tools,
 		Truncate:    request.Truncation == "auto",
 		ServiceTier: openAIServiceTier(request.ServiceTier),
+		SessionHint: strings.TrimSpace(request.PromptCacheKey),
 	}, inlineInstructions, nil
 }
 

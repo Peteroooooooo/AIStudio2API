@@ -115,6 +115,14 @@ func NewClient(options ClientOptions) *Client {
 	}
 }
 
+// LastTurnAccount 返回对话历史中最后一个由本进程生成的模型轮所属的账户 ID，未命中时返回空串
+func (c *Client) LastTurnAccount(apiKey string, contents []Content) string {
+	if c == nil || c.turns == nil {
+		return ""
+	}
+	return c.turns.lastAccount(apiKey, contents)
+}
+
 // RPCError 保存上游状态和协议错误码
 type RPCError struct {
 	Method     string

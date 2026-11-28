@@ -1732,9 +1732,23 @@ func (service *trackedService) acquireWarmLease(ctx context.Context, selection a
 			preferred = selection.PreferredAccountID
 		}
 		smartRouting := service.pool.IsSmartRouting()
+		stickyAccountID := ""
+		if smartRouting && !fixedAccount {
+			stickyAccountID, _ = service.pool.ResolveStickyAccount(selection)
+		}
+		stickyInWarmAvailable := stickyAccountID != "" &&
+			slices.Contains(groups.WarmAvailable, stickyAccountID) &&
+			service.pool.StickyAccountEligible(selection, stickyAccountID)
+		stickyInWarm := stickyAccountID != "" &&
+			(slices.Contains(groups.WarmReady, stickyAccountID) || stickyInWarmAvailable) &&
+			service.pool.StickyAccountEligible(selection, stickyAccountID)
 		var warmImmediate []string
 		if smartRouting {
-			warmImmediate = groups.WarmReady
+			if stickyInWarmAvailable {
+				warmImmediate = append(slices.Clone(groups.WarmReady), stickyAccountID)
+			} else {
+				warmImmediate = groups.WarmReady
+			}
 		} else {
 			warmImmediate = append(append([]string(nil), groups.WarmReady...), groups.WarmAvailable...)
 		}
@@ -1745,7 +1759,7 @@ func (service *trackedService) acquireWarmLease(ctx context.Context, selection a
 			var lease *aistudio.AccountLease
 			var acquireErr error
 			if idle := service.pool.WithoutPendingProofs(warmImmediate); len(idle) > 0 && len(idle) < len(warmImmediate) &&
-				!slices.Contains(warmImmediate, selection.PreferredAccountID) {
+				!slices.Contains(warmImmediate, selection.PreferredAccountID) && !stickyInWarm {
 				candidate.AllowedAccountIDs = idle
 				lease, _, acquireErr = service.pool.TryAcquireFor(ctx, candidate)
 				candidate.AllowedAccountIDs = warmImmediate
@@ -1791,8 +1805,15 @@ func (service *trackedService) acquireWarmLease(ctx context.Context, selection a
 				}
 			}
 			accountID := cmp.Or(preferred, standby[0])
+			if preferred == "" && stickyAccountID != "" && slices.Contains(groups.StandbyReady, stickyAccountID) {
+				accountID = stickyAccountID
+			}
 			candidate := selection
-			candidate.AccountID = accountID
+			if fixedAccount {
+				candidate.AccountID = accountID
+			} else {
+				candidate.AllowedAccountIDs = []string{accountID}
+			}
 			lease, _, acquireErr := service.pool.TryAcquireFor(ctx, candidate)
 			if acquireErr != nil {
 				if errors.Is(acquireErr, aistudio.ErrAccountNotFound) && !fixedAccount {
@@ -2240,6 +2261,21 @@ func (service *trackedService) generateWithRetry(
 	bursting := service.disconnects.bursting(modelID, generationStartedAt)
 	var lastChannel aistudio.Channel
 	settled, broken := make(map[string]struct{}), make(map[string]struct{})
+	var sessionKey, turnAccountID string
+	if unbound {
+		sessionHint := strings.TrimSpace(request.SessionHint)
+		if sessionHint == "" {
+			sessionHint = aistudio.SessionHintFromContext(requestCtx)
+		}
+		sessionKey = aistudio.ComputeSessionKeyForRequest(
+			aistudio.APIKeyFromContext(requestCtx), modelID, sessionHint, request.System, request.Contents,
+		)
+		if stickyLookup, ok := service.service.(interface {
+			StickyTurnAccount(context.Context, aistudio.GenerateRequest) string
+		}); ok {
+			turnAccountID = stickyLookup.StickyTurnAccount(requestCtx, request)
+		}
+	}
 	for attempt := 0; attempt < retry.maxAttempts; attempt++ {
 		selectionAccountID := requestedAccountID
 		recoveringAccount := retry.recoveryAccountID != ""
@@ -2257,7 +2293,8 @@ func (service *trackedService) generateWithRetry(
 			RequestSize: requestSize,
 		}
 		if unbound {
-			selection.SessionKey = aistudio.ComputeSessionKey(aistudio.APIKeyFromContext(requestCtx), modelID, request.System, request.Contents)
+			selection.SessionKey = sessionKey
+			selection.TurnAccountID = turnAccountID
 		}
 		if resourceID != "" || request.Config.SpeechConfig != nil && request.Config.SpeechConfig.Mode != "" {
 			selection.PlaygroundOnly = true
@@ -2359,7 +2396,14 @@ func (service *trackedService) generateWithRetry(
 		if queueDelayed {
 			service.requests.logRequestProgress(request.ID, accountLabel, "INFO", "排队结束", "waited", time.Since(queueStartedAt))
 		}
-		service.requests.logRequestProgress(request.ID, accountLabel, "INFO", "等待上游响应")
+		waitFields := make([]any, 0, 4)
+		if route := lease.RouteReason(); route != "" {
+			waitFields = append(waitFields, "route", route)
+		}
+		if stickyTarget := lease.StickyTarget(); stickyTarget != "" {
+			waitFields = append(waitFields, "sticky_target", stickyTarget)
+		}
+		service.requests.logRequestProgress(request.ID, accountLabel, "INFO", "等待上游响应", waitFields...)
 		primary := service.startAttempt(requestCtx, request, resourceID, modelID, fallbackReason, lease, selection, false, retry.failures)
 		var plan *hedgePlan
 		if hedgeable && !primary.interactionTask && !hedged {
@@ -2423,6 +2467,9 @@ func (service *trackedService) generateWithRetry(
 			}
 		}
 		if winner != nil {
+			if sessionKey != "" {
+				service.pool.ConfirmSmartSession(sessionKey, winner.serving.Load().Account().ID, modelID)
+			}
 			service.proxies.ReportSuccess(winner.proxy)
 			service.disconnects.record(modelID, winner.serving.Load().Channel(), false, time.Now())
 			if retry.buildRejection != nil {
@@ -2924,6 +2971,9 @@ func (service *trackedService) settleAttempt(
 		}
 	} else {
 		service.pool.RecordSmartFailure(accountID, quotaFailure)
+	}
+	if attempt.selection.SessionKey != "" && requestCtx.Err() == nil {
+		service.pool.InvalidateSmartSession(attempt.selection.SessionKey, accountID)
 	}
 	var rpcErr *aistudio.RPCError
 	buildRejected := lease.Channel() == aistudio.ChannelBuild && service.pool.PlaygroundEnabled() && requestCtx.Err() == nil &&

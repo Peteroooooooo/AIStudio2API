@@ -812,7 +812,7 @@ func (c *Client) Generate(ctx context.Context, request GenerateRequest) (<-chan 
 	restoring := request.restoreModelTurns && !build && !assistant && !interaction && !task
 	if restoring {
 		var tip turnLink
-		request.Contents, request.turnToken, tip = c.turns.restore(apiKey, request.Contents)
+		request.Contents, request.turnToken, tip = c.turns.restore(apiKey, request.AccountID, request.Contents)
 		request.turnChain = turnChain{contents: request.Contents, tip: tip}
 	}
 	if err := validateVideoParts(request.Contents); err != nil {
@@ -1096,6 +1096,7 @@ func (c *Client) Generate(ctx context.Context, request GenerateRequest) (<-chan 
 			_ = send(*finish)
 		}
 		if restoring && trailing == nil && !(contract != nil && contract.replyTool && calledReplyTool(output)) {
+			turn.accountID = request.AccountID
 			c.turns.store(apiKey, request.turnChain.tip, turn)
 		}
 	}()

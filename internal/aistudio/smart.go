@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"math"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -119,12 +120,25 @@ func (t *smartTracker) decayedPenalty(st *smartAccountState, now time.Time) floa
 	return decayed
 }
 
-func (t *smartTracker) recordDispatch(accountID string, sessionKey string, now time.Time) {
+func (t *smartTracker) recordRPM(accountID string, now time.Time) {
 	st := t.accountState(accountID, now)
 	t.pruneDispatches(st, now)
 	st.recentDispatches = append(st.recentDispatches, now)
+}
+
+func (t *smartTracker) recordDispatch(accountID string, sessionKey string, now time.Time) {
+	t.recordRPM(accountID, now)
 	if sessionKey != "" {
 		t.setSession(sessionKey, accountID, now)
+	}
+}
+
+func (t *smartTracker) clearSessionIfAccount(sessionKey string, accountID string) {
+	if sessionKey == "" || accountID == "" || t.sessions == nil {
+		return
+	}
+	if entry, ok := t.sessions[sessionKey]; ok && entry.accountID == accountID {
+		delete(t.sessions, sessionKey)
 	}
 }
 
@@ -224,19 +238,27 @@ func (t *smartTracker) seedDailyUsage(accountID string, requests int64, tokens i
 
 // ComputeSessionKey 生成用于保持隐式提示词缓存命中的稳定会话粘性键
 func ComputeSessionKey(apiKey string, modelID string, system []string, contents []Content) string {
-	var b strings.Builder
-	b.Grow(512)
-	b.WriteString(strings.TrimSpace(apiKey))
-	b.WriteByte('|')
-	b.WriteString(strings.TrimPrefix(strings.TrimSpace(modelID), "models/"))
-	b.WriteByte('|')
-	sysText := strings.TrimSpace(strings.Join(system, "\n"))
-	if len(sysText) > 512 {
-		sysText = sysText[:512]
+	return ComputeSessionKeyForRequest(apiKey, modelID, "", system, contents)
+}
+
+// ComputeSessionKeyForRequest 在剥离客户端动态头（如计费头 cch=）与拒绝句后，基于完整稳定系统提示与首条用户消息（或显式会话键）生成会话粘性键，避免动态头漂移与 512 字节截断导致的并发子代理碰撞
+func ComputeSessionKeyForRequest(apiKey string, modelID string, sessionHint string, system []string, contents []Content) string {
+	h := sha256.New()
+	writePart := func(s string) {
+		_, _ = h.Write([]byte(s))
+		_, _ = h.Write([]byte{'|'})
 	}
-	b.WriteString(sysText)
-	b.WriteByte('|')
-	for _, content := range contents {
+	writePart(strings.TrimSpace(apiKey))
+	writePart(strings.TrimPrefix(strings.TrimSpace(modelID), "models/"))
+	if hint := strings.TrimSpace(sessionHint); hint != "" {
+		writePart("hint")
+		writePart(hint)
+		return hex.EncodeToString(h.Sum(nil)[:12])
+	}
+	cleanedSystem := clientSystem(system)
+	writePart(strings.TrimSpace(strings.Join(cleanedSystem, "\n")))
+	cleanedContents := dropUserRejected(contents)
+	for _, content := range cleanedContents {
 		if content.Role != RoleUser {
 			continue
 		}
@@ -244,14 +266,10 @@ func ComputeSessionKey(apiKey string, modelID string, system []string, contents 
 		if text == "" {
 			continue
 		}
-		if len(text) > 512 {
-			text = text[:512]
-		}
-		b.WriteString(text)
+		writePart(text)
 		break
 	}
-	sum := sha256.Sum256([]byte(b.String()))
-	return hex.EncodeToString(sum[:12])
+	return hex.EncodeToString(h.Sum(nil)[:12])
 }
 
 // SetSmartConfig 更新智能路由的限频与自动冻结配置
@@ -369,11 +387,170 @@ func (p *AccountPool) ClearSmartPenalty(accountID string) {
 	}
 }
 
+// ResolveStickyAccount 返回选号命中的粘性账户及其来源（"turn" 或 "session"）；无粘性时返回空串
+func (p *AccountPool) ResolveStickyAccount(selection AccountSelection) (string, string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.stickyTargetLocked(selection, time.Now())
+}
+
+// HasStickyAccount 返回选号是否具备有效的历史轮或会话粘性目标
+func (p *AccountPool) HasStickyAccount(selection AccountSelection) bool {
+	id, _ := p.ResolveStickyAccount(selection)
+	return id != ""
+}
+
+// StickyAccountEligible 判断粘性账户当前是否健康、未冷却、未达硬 RPM 且有可用并发槽位
+func (p *AccountPool) StickyAccountEligible(selection AccountSelection, accountID string) bool {
+	accountID = strings.TrimSpace(accountID)
+	if accountID == "" {
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := time.Now()
+	account := p.byID[accountID]
+	if account == nil {
+		return false
+	}
+	if selection.AllowedAccountIDs != nil && !slices.Contains(selection.AllowedAccountIDs, accountID) {
+		return false
+	}
+	if !p.stickyAccountHealthyLocked(accountID, selection, now) {
+		return false
+	}
+	if account.exclusive || account.exclusiveWaiters > 0 || account.authRefreshers > 0 ||
+		account.active >= p.perAccountConcurrency || p.assistantBusyLocked(account, selection) {
+		return false
+	}
+	if p.smart != nil && p.smart.hardRPM > 0 {
+		st := p.smart.accountState(accountID, now)
+		if p.smart.pruneDispatches(st, now) >= p.smart.hardRPM {
+			return false
+		}
+	}
+	return true
+}
+
+// ConfirmSmartSession 在请求成功收到上游首事件后确认或刷新会话粘性，不覆盖其他仍健康的原粘性账号
+func (p *AccountPool) ConfirmSmartSession(sessionKey string, accountID string, modelID string) {
+	sessionKey = strings.TrimSpace(sessionKey)
+	accountID = strings.TrimSpace(accountID)
+	if sessionKey == "" || accountID == "" {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.smart == nil {
+		return
+	}
+	now := time.Now()
+	prev := p.smart.stickyAccount(sessionKey, now)
+	if prev == "" || prev == accountID || !p.stickyAccountHealthyLocked(prev, AccountSelection{ModelID: modelID, Method: "generateContent"}, now) {
+		p.smart.setSession(sessionKey, accountID, now)
+	}
+}
+
+// InvalidateSmartSession 在账户尝试于首事件前失败时清除指向该失败账户的会话粘性，避免后续请求继续命中故障号
+func (p *AccountPool) InvalidateSmartSession(sessionKey string, accountID string) {
+	sessionKey = strings.TrimSpace(sessionKey)
+	accountID = strings.TrimSpace(accountID)
+	if sessionKey == "" || accountID == "" {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.smart != nil {
+		p.smart.clearSessionIfAccount(sessionKey, accountID)
+	}
+}
+
+func (p *AccountPool) stickyTargetLocked(selection AccountSelection, now time.Time) (string, string) {
+	if id := strings.TrimSpace(selection.TurnAccountID); id != "" {
+		return id, "turn"
+	}
+	if p.smart != nil && selection.SessionKey != "" {
+		if id := p.smart.stickyAccount(selection.SessionKey, now); id != "" {
+			return id, "session"
+		}
+	}
+	return "", ""
+}
+
+func (p *AccountPool) stickyAccountHealthyLocked(accountID string, selection AccountSelection, now time.Time) bool {
+	account := p.byID[accountID]
+	if account == nil || !account.Config.Enabled || account.State != AccountReady {
+		return false
+	}
+	if selection.ModelID != "" && !p.accountSupportsAnyChannelLocked(account, selection) {
+		return false
+	}
+	if _, cooling := p.accountChannelCooldownLocked(account, selection, now); cooling {
+		return false
+	}
+	if p.smart != nil {
+		st := p.smart.accountState(accountID, now)
+		if !selection.BypassCooldown && now.Before(st.rejectionHoldUntil) {
+			return false
+		}
+		if p.smart.decayedPenalty(st, now) >= 10 {
+			return false
+		}
+	}
+	return true
+}
+
+// recordSmartDispatchLocked 记录账户 60s RPM 窗口并在保护健康原粘性的前提下更新会话归属，同时返回本次选号原因与原粘性目标
+func (p *AccountPool) recordSmartDispatchLocked(account *Account, selection AccountSelection, now time.Time) (string, string) {
+	if selection.BypassCooldown || p.smart == nil {
+		return "", ""
+	}
+	stickyID, stickySource := p.stickyTargetLocked(selection, now)
+	p.smart.recordRPM(account.ID, now)
+	if p.routingStrategy != "smart" {
+		if selection.SessionKey != "" {
+			p.smart.setSession(selection.SessionKey, account.ID, now)
+		}
+		return "", ""
+	}
+	if selection.AccountID != "" || selection.ResourceID != "" {
+		return "fixed", ""
+	}
+	if stickyID == "" {
+		if selection.SessionKey != "" {
+			p.smart.setSession(selection.SessionKey, account.ID, now)
+		}
+		return "new_spread", ""
+	}
+	if account.ID == stickyID {
+		if selection.SessionKey != "" {
+			p.smart.setSession(selection.SessionKey, account.ID, now)
+		}
+		if stickySource == "turn" {
+			return "turn_sticky", ""
+		}
+		return "session_sticky", ""
+	}
+	// 实际选中的账户不是原粘性账户：原账户仍健康时视为临时溢出，绝不覆写原会话粘性；原账户已故障/冷却时执行迁移
+	if p.stickyAccountHealthyLocked(stickyID, selection, now) {
+		st := p.smart.accountState(stickyID, now)
+		rpm60 := p.smart.pruneDispatches(st, now)
+		if p.smart.hardRPM > 0 && rpm60 >= p.smart.hardRPM {
+			return "overflow_rpm", stickyID
+		}
+		return "overflow_busy", stickyID
+	}
+	if selection.SessionKey != "" {
+		p.smart.setSession(selection.SessionKey, account.ID, now)
+	}
+	return "failover", stickyID
+}
+
 func (p *AccountPool) sortSmartIndicesLocked(indices []int, selection AccountSelection, now time.Time) {
 	if p.smart == nil {
 		p.smart = newSmartTracker()
 	}
-	stickyID := p.smart.stickyAccount(selection.SessionKey, now)
+	stickyID, _ := p.stickyTargetLocked(selection, now)
 	scores := make(map[string]float64, len(indices))
 	for _, idx := range indices {
 		account := p.accounts[idx]
@@ -398,34 +575,35 @@ func (p *AccountPool) smartScoreLocked(account *Account, selection AccountSelect
 	st := p.smart.accountState(account.ID, now)
 	rpm60 := p.smart.pruneDispatches(st, now)
 	penalty := p.smart.decayedPenalty(st, now)
+	rejected := !selection.BypassCooldown && now.Before(st.rejectionHoldUntil)
+	hardLimited := p.smart.hardRPM > 0 && rpm60 >= p.smart.hardRPM
+	stickyEligible := stickyID != "" && account.ID == stickyID && !rejected && !hardLimited && penalty < 10
 
 	var score float64
 
 	// 1. 403 账户级短时保护锁
-	if !selection.BypassCooldown && now.Before(st.rejectionHoldUntil) {
+	if rejected {
 		score -= 1_000_000
 	}
 
-	// 2. 本地 60s 滑动窗口 RPM 软/硬保护
-	if p.smart.hardRPM > 0 && rpm60 >= p.smart.hardRPM {
+	// 2. 本地 60s 滑动窗口 RPM 软/硬保护：新会话与溢出遵循软硬阈值分散负载；已命中的粘性续接轮在未触及硬上限前保持粘性
+	if hardLimited {
 		score -= 500_000 + float64(rpm60)*1000
-	} else if p.smart.softRPM > 0 && rpm60 >= p.smart.softRPM {
+	} else if !stickyEligible && p.smart.softRPM > 0 && rpm60 >= p.smart.softRPM {
 		score -= 50_000 + float64(rpm60-p.smart.softRPM)*5000
 	} else {
 		score -= float64(rpm60) * 15
 	}
 
-	// 3. 绝对优先完全空闲账户 (active == 0)
-	if account.active == 0 {
+	// 3 & 4. 续接粘性 vs 新会话分摊：
+	// - 命中粘性的续接轮：只要原号健康、未达硬 RPM 且有并发余量，优先留在原号吃隐式缓存，不因其他并发请求路过而被踢开
+	// - 无粘性的新会话（如并发拉起的多个新 Sub-agent）：绝对优先完全空闲账户 (active == 0)，自然分摊到不同账号
+	if stickyEligible {
+		score += 100_000 - float64(account.active)*1_000
+	} else if account.active == 0 {
 		score += 20_000
 	} else {
 		score -= float64(account.active) * 20_000
-	}
-
-	// 4. 会话粘性：仅在粘性账号健康、完全空闲且未触及软 RPM 上限时生效，尽量命中 Google 隐式提示词缓存
-	if stickyID != "" && account.ID == stickyID && account.active == 0 && penalty < 10 &&
-		(p.smart.softRPM == 0 || rpm60 < p.smart.softRPM) {
-		score += 5_000
 	}
 
 	// 5. 权益等级与滚动套餐额度优先

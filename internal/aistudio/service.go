@@ -889,6 +889,19 @@ func (s *PooledService) generateTurns(request GenerateRequest) ([]string, []Cont
 	return system, contents
 }
 
+// StickyTurnAccount 根据请求历史前缀链反查上一模型轮所属账户 ID，用于多轮对话精确保持隐式缓存粘性
+func (s *PooledService) StickyTurnAccount(ctx context.Context, request GenerateRequest) string {
+	if s == nil || s.client == nil || len(request.Contents) == 0 {
+		return ""
+	}
+	_, contents := s.generateTurns(request)
+	if len(contents) == 0 {
+		return ""
+	}
+	apiKey, _ := ctx.Value(apiKeyContextKey{}).(string)
+	return s.client.LastTurnAccount(apiKey, contents)
+}
+
 // Generate 使用支持目标模型的独占账户生成事件流
 func (s *PooledService) Generate(ctx context.Context, request GenerateRequest) (<-chan Event, error) {
 	modelID := strings.TrimPrefix(strings.TrimSpace(request.Model), "models/")
@@ -912,7 +925,12 @@ func (s *PooledService) Generate(ctx context.Context, request GenerateRequest) (
 	}
 	if selection.AccountID == "" && selection.ResourceID == "" {
 		apiKey, _ := ctx.Value(apiKeyContextKey{}).(string)
-		selection.SessionKey = ComputeSessionKey(apiKey, modelID, request.System, request.Contents)
+		sessionHint := strings.TrimSpace(request.SessionHint)
+		if sessionHint == "" {
+			sessionHint = SessionHintFromContext(ctx)
+		}
+		selection.SessionKey = ComputeSessionKeyForRequest(apiKey, modelID, sessionHint, request.System, request.Contents)
+		selection.TurnAccountID = s.client.LastTurnAccount(apiKey, request.Contents)
 	}
 	if RequestNeedsBuild(request) || request.Unary && s.BuildNativeNonstream {
 		selection.PreferredChannel = ChannelBuild

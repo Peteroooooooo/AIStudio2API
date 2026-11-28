@@ -45,6 +45,7 @@ type chatRequest struct {
 	Modalities          []string          `json:"modalities"`
 	Audio               *chatAudioConfig  `json:"audio"`
 	ServiceTier         string            `json:"service_tier"`
+	PromptCacheKey      string            `json:"prompt_cache_key"`
 }
 
 // chatExtraBody 是 Gemini OpenAI 兼容层的 extra_body 扩展
@@ -418,6 +419,7 @@ func (request chatRequest) toGenerateRequest(id string) (aistudio.GenerateReques
 		Config:      config,
 		Tools:       tools,
 		ServiceTier: openAIServiceTier(request.ServiceTier),
+		SessionHint: strings.TrimSpace(request.PromptCacheKey),
 	}, nil
 }
 

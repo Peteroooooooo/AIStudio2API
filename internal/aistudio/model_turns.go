@@ -13,12 +13,13 @@ import (
 )
 
 // modelTurnLimit 是本进程保存的 Playground 模型轮条数上限
-const modelTurnLimit = 1000
+const modelTurnLimit = 8192
 
-// modelTurn 是一次 Playground 生成按上游顺序给出的模型轮 Part 与最后一帧的轮次令牌
+// modelTurn 是一次 Playground 生成按上游顺序给出的模型轮 Part、最后一帧的轮次令牌与生成该轮的账户 ID
 type modelTurn struct {
 	parts     []Part
 	turnToken string
+	accountID string
 }
 
 // modelTurnKey 是请求所用 API key 与到该模型轮为止的对话摘要
@@ -44,10 +45,10 @@ func newModelTurnHistory() *modelTurnHistory {
 	return &modelTurnHistory{entries: make(map[modelTurnKey]*list.Element)}
 }
 
-// store 保存接在 tip 所在对话之后生成的模型轮；tip 为模型轮、回复带内联媒体或没有思考、签名与轮次令牌时不保存，达到上限时淘汰最久未用的一条
+// store 保存接在 tip 所在对话之后生成的模型轮；tip 为模型轮、回复为空或带内联媒体，或既无账户也无思考、签名与轮次令牌时不保存，达到上限时淘汰最久未用的一条
 func (turns *modelTurnHistory) store(apiKey string, tip turnLink, turn modelTurn) {
-	if tip.model || slices.ContainsFunc(turn.parts, func(part Part) bool { return part.InlineData != nil }) ||
-		turn.turnToken == "" && !slices.ContainsFunc(turn.parts, func(part Part) bool { return part.Thought || part.ThoughtSignature != "" }) {
+	if tip.model || len(turn.parts) == 0 || slices.ContainsFunc(turn.parts, func(part Part) bool { return part.InlineData != nil }) ||
+		turn.accountID == "" && turn.turnToken == "" && !slices.ContainsFunc(turn.parts, func(part Part) bool { return part.Thought || part.ThoughtSignature != "" }) {
 		return
 	}
 	key := modelTurnKey{apiKey: apiKey, digest: turnLinkDigest(tip.digest, true, turn.parts)}
@@ -66,8 +67,8 @@ func (turns *modelTurnHistory) store(apiKey string, tip turnLink, turn modelTurn
 	turns.entries[key] = turns.order.PushFront(modelTurnEntry{key: key, turn: turn})
 }
 
-// restore 把对话中本进程生成过的模型轮换成生成时的 Part 并刷新其最近使用顺序，函数调用沿用客户端回传的 ID，返回改写后的对话、最后一个模型轮的轮次令牌与对话最后一组轮次的累积摘要
-func (turns *modelTurnHistory) restore(apiKey string, contents []Content) ([]Content, string, turnLink) {
+// restore 把对话中本进程生成过的模型轮换成生成时的 Part 并刷新其最近使用顺序，函数调用沿用客户端回传的 ID，返回改写后的对话、同账户最后一个模型轮的轮次令牌与对话最后一组轮次的累积摘要
+func (turns *modelTurnHistory) restore(apiKey string, accountID string, contents []Content) ([]Content, string, turnLink) {
 	links := turnLinks(contents)
 	turns.mu.Lock()
 	defer turns.mu.Unlock()
@@ -80,8 +81,16 @@ func (turns *modelTurnHistory) restore(apiKey string, contents []Content) ([]Con
 			if element, found := turns.entries[modelTurnKey{apiKey: apiKey, digest: link.digest}]; found {
 				turns.order.MoveToFront(element)
 				turn := element.Value.(modelTurnEntry).turn
-				restored = append(restored, Content{Role: RoleAssistant, Parts: withCallIDs(turn.parts, contents[start:link.end])})
-				token = turn.turnToken
+				if turn.turnToken != "" || slices.ContainsFunc(turn.parts, func(part Part) bool { return part.Thought || part.ThoughtSignature != "" }) {
+					restored = append(restored, Content{Role: RoleAssistant, Parts: withCallIDs(turn.parts, contents[start:link.end])})
+				} else {
+					restored = append(restored, contents[start:link.end]...)
+				}
+				if turn.accountID == "" || accountID == "" || turn.accountID == accountID {
+					token = turn.turnToken
+				} else {
+					token = ""
+				}
 			} else {
 				restored = append(restored, contents[start:link.end]...)
 				token = ""
@@ -92,6 +101,28 @@ func (turns *modelTurnHistory) restore(apiKey string, contents []Content) ([]Con
 		start, tip = link.end, link
 	}
 	return restored, token, tip
+}
+
+// lastAccount 按对话历史前缀链匹配最后一个由本进程生成的模型轮，返回其所属账户 ID；无历史模型轮或未命中时返回空串
+func (turns *modelTurnHistory) lastAccount(apiKey string, contents []Content) string {
+	if !slices.ContainsFunc(contents, func(content Content) bool { return content.Role == RoleAssistant }) {
+		return ""
+	}
+	links := turnLinks(contents)
+	turns.mu.Lock()
+	defer turns.mu.Unlock()
+	for index := len(links) - 1; index >= 0; index-- {
+		link := links[index]
+		if !link.model {
+			continue
+		}
+		if element, found := turns.entries[modelTurnKey{apiKey: apiKey, digest: link.digest}]; found {
+			if accountID := element.Value.(modelTurnEntry).turn.accountID; accountID != "" {
+				return accountID
+			}
+		}
+	}
+	return ""
 }
 
 // withCallIDs 返回 parts 的副本，其中的函数调用依次换成 echoed 中函数调用的 ID
@@ -203,7 +234,7 @@ func computeTurnLinkDigest(previous string, model bool, parts []Part) string {
 }
 
 // turnDigestLimit 是本进程缓存的轮次摘要条数上限
-const turnDigestLimit = 4096
+const turnDigestLimit = 16384
 
 // turnDigestCache 是轮次摘要缓存，键为前序摘要与轮次原始内容的 SHA-256，超过上限时丢弃最早的一条
 type turnDigestCache struct {

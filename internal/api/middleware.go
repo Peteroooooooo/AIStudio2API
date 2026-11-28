@@ -582,13 +582,22 @@ func requestedAccount(r *http.Request) string {
 	return strings.TrimSpace(r.Header.Get("X-AIStudio-Account"))
 }
 
-// accountContextMiddleware 把 X-AIStudio-Account 请求头指定的账户放进请求上下文，账户池只用该账户
+// requestedSessionHint 返回显式会话粘性请求头（X-Session-Id），没有指定时为空
+func requestedSessionHint(r *http.Request) string {
+	return strings.TrimSpace(r.Header.Get("X-Session-Id"))
+}
+
+// accountContextMiddleware 把 X-AIStudio-Account 与显式会话粘性头放进请求上下文
 func accountContextMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
 		if accountID := requestedAccount(r); accountID != "" {
-			r = r.WithContext(aistudio.ContextWithAccount(r.Context(), accountID))
+			ctx = aistudio.ContextWithAccount(ctx, accountID)
 		}
-		next.ServeHTTP(w, r)
+		if sessionHint := requestedSessionHint(r); sessionHint != "" {
+			ctx = aistudio.ContextWithSessionHint(ctx, sessionHint)
+		}
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 

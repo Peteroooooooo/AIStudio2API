@@ -477,6 +477,8 @@ type AccountSelection struct {
 	BypassCooldown bool
 	// SessionKey 用于 smart 策略下保持同一会话的隐式缓存粘性
 	SessionKey string
+	// TurnAccountID 是由对话历史前缀链（modelTurnHistory）直接反查到的上一模型轮所属账户 ID，优先级高于 SessionKey
+	TurnAccountID string
 	// RequestSize 是请求输入正文的字节数，0 表示未知
 	RequestSize int64
 	anyTier     bool
@@ -634,6 +636,10 @@ type AccountLease struct {
 	requestSize int64
 	// proofPending 表示生成租约还没有取完 proof，计入账户的 pendingProofs
 	proofPending bool
+	// routeReason 记录 smart 选号本次落点的原因（turn_sticky / session_sticky / new_spread / overflow_busy / overflow_rpm / failover / fixed）
+	routeReason string
+	// stickyTarget 在发生临时溢出或故障迁移时记录原本命中的粘性账户 ID，便于日志诊断
+	stickyTarget string
 	// assistantDone 表示本租约的写代码助手生成已结束，账户已可接其他 -build 请求
 	assistantDone bool
 	operation     sync.Mutex
@@ -1655,6 +1661,22 @@ func (p *AccountPool) AcquireResource(ctx context.Context, resourceID string) (*
 // Account 返回当前租约持有的账户
 func (l *AccountLease) Account() *Account {
 	return l.account
+}
+
+// RouteReason 返回本次选号原因（非 smart 或绕过冷却时为空）
+func (l *AccountLease) RouteReason() string {
+	if l == nil {
+		return ""
+	}
+	return l.routeReason
+}
+
+// StickyTarget 返回发生溢出或故障迁移时的原粘性账户 ID（未偏离或无粘性时为空）
+func (l *AccountLease) StickyTarget() string {
+	if l == nil {
+		return ""
+	}
+	return l.stickyTarget
 }
 
 // ModelAccessGeneration 返回租约开始时的模型资格目录版本号
@@ -3335,14 +3357,13 @@ func (p *AccountPool) tryAcquireLocked(selection AccountSelection, now time.Time
 		account.LastUsed = now
 		p.lastPicked[selectionAccessScope(selection)] = account.ID
 		p.lastPickedChannel[selectionAccessScope(selection)] = candidate.channel
-		if !selection.BypassCooldown && p.smart != nil {
-			p.smart.recordDispatch(account.ID, selection.SessionKey, now)
-		}
+		routeReason, stickyTarget := p.recordSmartDispatchLocked(account, selection, now)
 		return &AccountLease{
 			pool: p, account: account, authGeneration: account.authGeneration,
 			modelAccessGeneration: account.modelAccessGeneration, refreshRuntime: refreshRuntime, checkedAt: now.UTC(),
 			channel: candidate.channel, ignoreQuotaCooldown: selection.IgnoreQuotaCooldown, bypassCooldown: selection.BypassCooldown,
 			requestSize: selection.RequestSize, proofPending: proofPending,
+			routeReason: routeReason, stickyTarget: stickyTarget,
 		}, time.Time{}, true, nil
 	}
 	return nil, earliest, waitable, nil

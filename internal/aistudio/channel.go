@@ -100,6 +100,20 @@ func contextAccount(ctx context.Context) string {
 	return accountID
 }
 
+// sessionHintContextKey 是请求上下文中显式会话键的键
+type sessionHintContextKey struct{}
+
+// ContextWithSessionHint 返回带有请求显式会话键的上下文
+func ContextWithSessionHint(ctx context.Context, hint string) context.Context {
+	return context.WithValue(ctx, sessionHintContextKey{}, strings.TrimSpace(hint))
+}
+
+// SessionHintFromContext 返回请求上下文中携带的显式会话键
+func SessionHintFromContext(ctx context.Context) string {
+	hint, _ := ctx.Value(sessionHintContextKey{}).(string)
+	return hint
+}
+
 // ContextWithSelectionScope 返回带有 source 中所用 API key 与指定账户的 ctx，供跨请求的操作沿用发起请求的选号范围
 func ContextWithSelectionScope(ctx, source context.Context) context.Context {
 	if key, ok := source.Value(apiKeyContextKey{}).(string); ok {
@@ -107,6 +121,9 @@ func ContextWithSelectionScope(ctx, source context.Context) context.Context {
 	}
 	if accountID := contextAccount(source); accountID != "" {
 		ctx = ContextWithAccount(ctx, accountID)
+	}
+	if hint := SessionHintFromContext(source); hint != "" {
+		ctx = ContextWithSessionHint(ctx, hint)
 	}
 	return ctx
 }

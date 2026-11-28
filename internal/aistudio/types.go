@@ -456,6 +456,8 @@ type GenerateRequest struct {
 	UserMessageRewrite string `json:"-"`
 	// ThinkingGuard 表示引导思考阶段保持简洁抽象不复述敏感词并将思考上限收敛到低档，以减轻思考阶段触发上游过滤截断
 	ThinkingGuard bool `json:"-"`
+	// SessionHint 是客户端显式提供的会话或缓存键（如 prompt_cache_key、X-Session-Id），用于辅助智能路由会话粘性
+	SessionHint string `json:"-"`
 	// continuationRound 为自动续写的轮次，首轮为 0
 	continuationRound int
 	// continuationToken 为上一轮响应给出的续写 token
